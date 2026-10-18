@@ -8,6 +8,7 @@
   ],
   "forkProcessing": "enabled",
   "labels": ["dependencies"],
+  "postUpdateOptions": ["gomodTidy"],
   "prHourlyLimit": 2,
   "prConcurrentLimit": 5,
   "rangeStrategy": "bump",
