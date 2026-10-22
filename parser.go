@@ -43,6 +43,8 @@ const (
 	LenientSteps                           // Accept steps at or above the range size (e.g. */60), as robfig/cron did
 	StrictDays                             // Reject a day of month that occurs in none of the selected months (e.g. Feb 30)
 	StepWildcard                           // With DowOrDom, a stepped star (*/2) in DOM or DOW still counts as a wildcard, as in Vixie cron
+	EveryRoundUp                           // Round interval durations below the minimum up instead of rejecting them
+	DSTSkip                                // Skip times in a DST spring-forward gap instead of running them in the hour after it
 )
 
 // Extended is a convenience flag that enables all extended cron syntax options:
@@ -53,6 +55,34 @@ const (
 //	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor | cron.Extended)
 //	// Now supports: FRI#3 (3rd Friday), MON#L (last Monday), L (last day), 15W (nearest weekday)
 const Extended = DowNth | DowLast | DomL | DomW
+
+// RobfigCompat is a convenience flag that enables all options needed to
+// accept and schedule specs like robfig/cron/v3: DowOrDom, LenientSteps,
+// EveryRoundUp, and DSTSkip. Use it when go-cron must agree with another
+// system that still uses robfig/cron, such as the Kubernetes CronJob controller.
+//
+// Known differences from robfig/cron v3:
+//   - The parser accepts specs robfig/cron rejects, for example 7 for
+//     Sunday, wraparound ranges like 22-2, quoted TZ= values and go-cron-only
+//     descriptors such as @triggered and @every_aligned. It rejects specs
+//     longer than 1024 characters and an empty TZ= value, which robfig/cron
+//     accepts.
+//   - A day-of-week "N/step" field runs up to 7, which is Sunday, so
+//     "1/2" also selects Sunday; robfig/cron stops at 6 (Saturday).
+//   - EveryRoundUp rounds up to the parser's minimum @every interval, so
+//     Parser.WithMinEveryInterval(time.Minute) turns "@every 30s" into 1m,
+//     where robfig/cron keeps 30s, and Parser.WithMinEveryInterval(0) keeps
+//     "@every 500ms", where robfig/cron rounds up to 1s.
+//   - When a job has a single run in the hour repeated by a DST fall-back
+//     (such as "30 1 * * *"), the Cron scheduler runs it once; robfig/cron
+//     runs it twice. Next itself returns both times.
+//
+// Example:
+//
+//	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor | cron.RobfigCompat)
+//	// Now "*/60 * * * *" parses, "0 0 13 * FRI" means "13th OR any Friday",
+//	// "@every 500ms" rounds up to 1s, and a 02:30 job is skipped on spring-forward days.
+const RobfigCompat = DowOrDom | LenientSteps | EveryRoundUp | DSTSkip
 
 var places = []ParseOption{
 	Second,
@@ -434,7 +464,7 @@ func (p Parser) parse(spec string) (Schedule, error) {
 		if p.options&Descriptor == 0 {
 			return nil, fmt.Errorf("parser does not accept descriptors: %q", spec)
 		}
-		return parseDescriptor(spec, loc, p.minEveryInterval, p.maxSearchYears, p.options&AlignEvery != 0)
+		return p.parseDescriptor(spec, loc)
 	}
 
 	// Split on whitespace.
@@ -539,10 +569,11 @@ func (p Parser) parse(spec string) (Schedule, error) {
 		DomConstraints: domConstraints,
 		DowConstraints: dowConstraints,
 		DowOrDom:       p.options&DowOrDom > 0,
+		DSTSkip:        p.options&DSTSkip != 0,
 	}, nil
 }
 
-// fieldBounds returns r with the parser's per-field options applied.
+// fieldBounds returns r adjusted for the parser options that relax range validation.
 func (p Parser) fieldBounds(r bounds) bounds {
 	r.lenientSteps = p.options&LenientSteps != 0
 	return r
@@ -1536,11 +1567,10 @@ func all(r bounds) uint64 {
 	return getBits(r.min, r.max, 1) | starBit
 }
 
-// parseDescriptor returns a predefined schedule for the expression, or error if none matches.
-
-// newDescriptorSchedule creates a SpecSchedule for descriptor-based schedules.
+// descriptorSpec creates a SpecSchedule for descriptor-based schedules, applying
+// the parser's search limit and DST option.
 // Second and Minute are always set to first value (0). Hour, Dom, Month, Dow vary.
-func newDescriptorSchedule(hour, dom, month, dow uint64, loc *time.Location, maxSearchYears int) *SpecSchedule {
+func (p Parser) descriptorSpec(hour, dom, month, dow uint64, loc *time.Location) *SpecSchedule {
 	return &SpecSchedule{
 		Second:         1 << seconds.min,
 		Minute:         1 << minutes.min,
@@ -1550,7 +1580,8 @@ func newDescriptorSchedule(hour, dom, month, dow uint64, loc *time.Location, max
 		Dow:            dow,
 		Year:           nil, // nil = any year (wildcard)
 		Location:       loc,
-		MaxSearchYears: maxSearchYears,
+		MaxSearchYears: p.maxSearchYears,
+		DSTSkip:        p.options&DSTSkip != 0,
 	}
 }
 
@@ -1576,24 +1607,30 @@ const (
 	descriptorNone         = "@none"
 )
 
-func parseDescriptor(descriptor string, loc *time.Location, minEveryInterval time.Duration, maxSearchYears int, alignEvery bool) (Schedule, error) {
+// parseDescriptor returns a predefined schedule for the expression, or error if none matches.
+func (p Parser) parseDescriptor(descriptor string, loc *time.Location) (Schedule, error) {
 	// Normalize DOW bits so that both Sunday=0 and Sunday=7 are handled consistently
 	allDow := NormalizeDOW(all(dow))
 	switch descriptor {
 	case descriptorYearly, descriptorAnnually:
-		return newDescriptorSchedule(1<<hours.min, 1<<dom.min, 1<<months.min, allDow, loc, maxSearchYears), nil
+		return p.descriptorSpec(1<<hours.min, 1<<dom.min, 1<<months.min, allDow, loc), nil
 	case descriptorMonthly:
-		return newDescriptorSchedule(1<<hours.min, 1<<dom.min, all(months), allDow, loc, maxSearchYears), nil
+		return p.descriptorSpec(1<<hours.min, 1<<dom.min, all(months), allDow, loc), nil
 	case descriptorWeekly:
-		return newDescriptorSchedule(1<<hours.min, all(dom), all(months), 1<<dow.min, loc, maxSearchYears), nil
+		return p.descriptorSpec(1<<hours.min, all(dom), all(months), 1<<dow.min, loc), nil
 	case descriptorDaily, descriptorMidnight:
-		return newDescriptorSchedule(1<<hours.min, all(dom), all(months), allDow, loc, maxSearchYears), nil
+		return p.descriptorSpec(1<<hours.min, all(dom), all(months), allDow, loc), nil
 	case descriptorHourly:
-		return newDescriptorSchedule(all(hours), all(dom), all(months), allDow, loc, maxSearchYears), nil
+		return p.descriptorSpec(all(hours), all(dom), all(months), allDow, loc), nil
 	case descriptorTriggered, descriptorManual, descriptorNone:
 		return TriggeredSchedule{}, nil
 	}
+	return p.intervalSchedule(descriptor)
+}
 
+// intervalSchedule returns the schedule for an interval descriptor such as
+// "@every 1h", or error if none matches.
+func (p Parser) intervalSchedule(descriptor string) (Schedule, error) {
 	for _, kw := range []string{descriptorEveryAligned, descriptorEveryStart, descriptorEvery} {
 		if !strings.HasPrefix(descriptor, kw) {
 			continue
@@ -1602,13 +1639,13 @@ func parseDescriptor(descriptor string, loc *time.Location, minEveryInterval tim
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse duration %q: %w", descriptor, err)
 		}
-		if minEveryInterval > 0 && duration < minEveryInterval {
-			return nil, fmt.Errorf("%s duration must be at least %v: %q", strings.TrimSpace(kw), minEveryInterval, descriptor)
+		if p.minEveryInterval > 0 && duration < p.minEveryInterval && p.options&EveryRoundUp == 0 {
+			return nil, fmt.Errorf("%s duration must be at least %v: %q", strings.TrimSpace(kw), p.minEveryInterval, descriptor)
 		}
-		if kw == descriptorEveryAligned || kw == descriptorEvery && alignEvery {
-			return EveryAlignedWithMin(duration, minEveryInterval), nil
+		if kw == descriptorEveryAligned || kw == descriptorEvery && p.options&AlignEvery != 0 {
+			return EveryAlignedWithMin(duration, p.minEveryInterval), nil
 		}
-		return EveryWithMin(duration, minEveryInterval), nil
+		return EveryWithMin(duration, p.minEveryInterval), nil
 	}
 
 	return nil, fmt.Errorf("unrecognized descriptor: %q", descriptor)

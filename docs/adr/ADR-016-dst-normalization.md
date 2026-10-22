@@ -8,6 +8,12 @@ Accepted
 fall-back deduplication below: one interval after 01:30 EDT is 01:30 EST, a
 regular run.
 
+**Update 2026-10-26:** The `DSTSkip` parse option (part of `RobfigCompat`)
+brings back Alternative 1 below as an opt-in, for callers whose schedules must
+agree with robfig/cron, such as tools that read Kubernetes CronJob specs. The
+default stays as decided here. `DSTSkip` covers spring-forward only; the
+scheduler's fall-back deduplication still applies.
+
 ## Date
 2025-12-14
 

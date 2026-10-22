@@ -33,7 +33,7 @@ The hour 2:00-2:59 AM does not exist
 
 ### Implementation
 
-The `checkHourDSTSkip` function in `spec.go` detects when time advances by 2 hours (indicating a DST spring-forward) and allows jobs scheduled for the skipped hour to run immediately:
+The `checkHourDSTSkip` function in `spec.go` detects when time advances by 2 hours (indicating a DST spring-forward) and runs jobs scheduled for the skipped hour in the hour after it, at their scheduled minute:
 
 ```go
 // If prev.Hour() == 1 and curr.Hour() == 3, a job for 2:XX runs at 3:XX
@@ -45,6 +45,9 @@ if curr.Hour()-prev.Hour() == 2 {
 ### Why ISC Behavior?
 
 The original `robfig/cron` silently skipped jobs scheduled during spring-forward transitions. This fork implements ISC cron behavior (used by most Unix systems) where skipped-hour jobs run immediately, ensuring no scheduled work is lost.
+
+To keep the robfig/cron behavior, add the `DSTSkip` parse option (or
+`RobfigCompat`, which includes it). `Next` and `Prev` then skip runs in the gap.
 
 ## Fall Back (Clock Repeats Hour)
 
