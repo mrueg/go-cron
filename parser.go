@@ -1502,7 +1502,7 @@ const (
 	descriptorEvery    = "@every "
 	// descriptorEveryAligned fires on the epoch grid (AlignedSchedule) and
 	// descriptorEveryStart counts from the start (ConstantDelaySchedule),
-	// whatever the parser's EveryAligned option says about plain @every.
+	// whatever the parser's AlignEvery option says about plain @every.
 	descriptorEveryAligned = "@every_aligned "
 	descriptorEveryStart   = "@every_start "
 	descriptorTriggered    = "@triggered"
