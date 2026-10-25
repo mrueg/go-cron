@@ -37,6 +37,7 @@ type Locker interface {
 
 func NewMemoryLocker(clock Clock) *MemoryLocker
 func SkipDuplicateRuns(locker Locker, name string, ttl time.Duration, logger Logger) JobWrapper
+func SkipWhileLocked(locker Locker, key string, ttl time.Duration, logger Logger) JobWrapper
 ```
 
 1. **One interface for both uses.** `TryLock` reserves a key until the TTL
@@ -82,6 +83,13 @@ func SkipDuplicateRuns(locker Locker, name string, ttl time.Duration, logger Log
    key, so without removal the store would keep one key per scheduled time.
    `TryLock` removes the expired keys whenever the store has doubled since the
    last removal, which keeps the cost per call constant on average.
+10. **Exclusion of a resource is its own wrapper.** `SkipWhileLocked(locker,
+    key, ttl, logger)` reserves the resource name before each run and releases
+    it when the run ends, also after a panic; a run that finds the key taken
+    is skipped. It does not deduplicate a scheduled time, and its TTL must
+    exceed the longest run. Across processes it only skips: waiting would need
+    a blocking acquire that not every store has (alternative 3). Within one
+    process, `ConcurrencyGroups` also offers the waiting variant.
 
 ## Consequences
 

@@ -2,16 +2,15 @@
 
 This guide shows how to ensure only one instance of a job runs across multiple application instances using external locking mechanisms.
 
-## Why Distributed Locking is Out of Scope
+## What go-cron Provides
 
-go-cron intentionally does not include built-in distributed locking because:
+go-cron ships the coordination interface and the wrappers on top of it, but no store:
 
-1. **Requires external infrastructure**: Redis, etcd, PostgreSQL, or Consul
-2. **Many valid backends**: No single "right" choice for all deployments
-3. **Composable design**: Locking is easily added via job wrappers
-4. **Drop-in compatibility**: Maintains simple robfig/cron migration path
+- **`cron.Locker`**: one method, `TryLock(ctx, key, ttl) (release, ok, err)`. You implement it for the store your instances share (Redis, PostgreSQL, etcd, …). `cron.NewMemoryLocker` coordinates the schedulers of one process and serves as a test double.
+- **`cron.SkipDuplicateRuns`**: runs each scheduled time of a job once across all instances.
+- **`cron.SkipWhileLocked`**: lets jobs that use one resource run one at a time across all instances.
 
-See [ADR-020](adr/ADR-020-feature-scope-boundary.md) for the full rationale.
+The stores stay out of the library, because each needs its own client dependency. See [ADR-025](adr/ADR-025-locker-interface.md), which extends [ADR-020](adr/ADR-020-feature-scope-boundary.md).
 
 ## The Problem
 
@@ -34,9 +33,9 @@ When running multiple instances of your application (for high availability or sc
                    (Usually not what you want)
 ```
 
-## Solution: Job Wrapper with Lock
+## Solution: Reserve the Run in a Shared Store
 
-Create a wrapper that acquires a distributed lock before running:
+Before running, each instance tries to reserve the run in a store all instances share. Only the instance that gets the reservation runs:
 
 ```
 ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
@@ -52,63 +51,71 @@ Create a wrapper that acquires a distributed lock before running:
         └── Only one instance runs the job
 ```
 
+### Deduplication needs the scheduled time in the key
+
+A lock named after the job and released after the run does **not** deduplicate. Example: the job runs for 1 second, and instance B's clock is 2 seconds behind instance A's. A takes the lock at 09:00:00, runs, and releases it at 09:00:01. B fires at 09:00:02 by A's clock, finds the lock free and runs the same 09:00 a second time.
+
+Correct deduplication reserves a key made of the job name **and the scheduled time**, such as `daily-report@2026-10-26T09:00:00Z`, and does **not** release it after the run; the reservation expires through its TTL. Every instance that comes later for the same scheduled time finds it taken, however late its clock is. `cron.SkipDuplicateRuns` does exactly this; the scheduled time comes from `cron.RunInfoFromContext` ([ADR-023](adr/ADR-023-run-info-in-context.md)).
+
+| Goal | Key | Released after the run | Wrapper |
+|------|-----|------------------------|---------|
+| Run each scheduled time once across instances | job name + scheduled time | No, expires via TTL | `SkipDuplicateRuns` |
+| Never run jobs on one resource at the same time | resource name | Yes | `SkipWhileLocked` |
+
+All instances must compute the same scheduled times: same spec, same time zone (`CRON_TZ=` or the same `WithLocation`). `@every` counts from each instance's own start and cannot be deduplicated; use a cron expression.
+
 ## Implementation Patterns
 
-### Pattern 1: Redis Lock with redsync
+### Pattern 1: Redis Locker
 
-[redsync](https://github.com/go-redsync/redsync) implements the Redlock algorithm for distributed locking.
+A `cron.Locker` for Redis is one `SET NX PX` for `TryLock` and a compare-and-delete for `release`, so a release after expiry cannot remove a newer holder's key.
 
 ```go
 package main
 
 import (
     "context"
+    "crypto/rand"
     "log"
     "time"
 
-    "github.com/go-redsync/redsync/v4"
-    "github.com/go-redsync/redsync/v4/redis/goredis/v9"
     "github.com/redis/go-redis/v9"
     cron "github.com/netresearch/go-cron"
 )
 
-// WithRedisLock creates a wrapper that acquires a Redis lock before running
-func WithRedisLock(rs *redsync.Redsync, lockName string, ttl time.Duration) cron.JobWrapper {
-    return func(job cron.Job) cron.Job {
-        return cron.FuncJob(func() {
-            mutex := rs.NewMutex(lockName,
-                redsync.WithExpiry(ttl),
-                redsync.WithTries(1), // Don't retry, just skip if locked
-            )
+// releaseScript deletes the key only if it still holds this caller's token.
+var releaseScript = redis.NewScript(`
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+    return redis.call("DEL", KEYS[1])
+end
+return 0`)
 
-            if err := mutex.Lock(); err != nil {
-                log.Printf("Could not acquire lock %s, skipping: %v", lockName, err)
-                return
-            }
-            defer mutex.Unlock()
+// RedisLocker implements cron.Locker on a Redis instance all schedulers share.
+type RedisLocker struct{ client *redis.Client }
 
-            job.Run()
-        })
+func (l RedisLocker) TryLock(ctx context.Context, key string, ttl time.Duration) (func(), bool, error) {
+    token := rand.Text()
+    ok, err := l.client.SetNX(ctx, key, token, ttl).Result()
+    if err != nil || !ok {
+        return nil, false, err
     }
+    release := func() {
+        _ = releaseScript.Run(context.Background(), l.client, []string{key}, token).Err()
+    }
+    return release, true, nil
 }
 
 func main() {
-    // Set up Redis client
-    client := redis.NewClient(&redis.Options{
-        Addr: "localhost:6379",
-    })
-    pool := goredis.NewPool(client)
-    rs := redsync.New(pool)
+    locker := RedisLocker{client: redis.NewClient(&redis.Options{Addr: "localhost:6379"})}
+    logger := cron.DefaultLogger
 
-    // Create scheduler with distributed lock wrapper
-    c := cron.New(cron.WithChain(
-        cron.Recover(cron.DefaultLogger),
-    ))
+    c := cron.New(cron.WithChain(cron.Recover(logger)))
 
-    // Add job with lock - only one instance runs it
+    // Each 09:00 runs on one instance only. The TTL must exceed the largest
+    // clock difference between the instances.
     c.AddJob("0 9 * * *",
         cron.NewChain(
-            WithRedisLock(rs, "daily-report-lock", 5*time.Minute),
+            cron.SkipDuplicateRuns(locker, "daily-report", 10*time.Minute, logger),
         ).Then(cron.FuncJob(dailyReport)),
         cron.WithName("daily-report"),
     )
@@ -119,9 +126,10 @@ func main() {
 
 func dailyReport() {
     log.Println("Running daily report (only on one instance)")
-    time.Sleep(2 * time.Minute) // Simulate work
 }
 ```
+
+The patterns below hold a lock for the duration of the run and release it afterwards. That serializes runs on a resource, like `SkipWhileLocked`, but it does not deduplicate a scheduled time (see above). To deduplicate with these stores, implement `cron.Locker` on them and use `SkipDuplicateRuns`.
 
 ### Pattern 2: PostgreSQL Advisory Locks
 
@@ -324,14 +332,15 @@ func main() {
 
 ## Combining with Other Wrappers
 
-Chain the lock wrapper with other job wrappers:
+Chain the coordination wrapper with other job wrappers:
 
 ```go
 c.AddJob("0 9 * * *",
     cron.NewChain(
-        cron.Recover(cron.DefaultLogger),           // 1. Recover from panics
-        WithRedisLock(rs, "daily-report", 10*time.Minute), // 2. Acquire lock
-        cron.SkipIfStillRunning(cron.DefaultLogger), // 3. Skip if already running locally
+        cron.Recover(cron.DefaultLogger),                                      // 1. Recover from panics
+        cron.SkipDuplicateRuns(locker, "daily-report", 10*time.Minute, logger), // 2. Reserve this scheduled time
+        cron.SkipIfStillRunning(cron.DefaultLogger),                           // 3. Skip if already running locally
+        cron.RetryWithBackoff(logger, 3, time.Second, time.Minute, 2),         // 4. Retry the job itself
     ).Then(cron.FuncJob(dailyReport)),
     cron.WithName("daily-report"),
 )
@@ -339,9 +348,12 @@ c.AddJob("0 9 * * *",
 
 **Order matters!** The wrappers execute from outside in:
 1. Recover catches any panic
-2. Lock is acquired
+2. The scheduled time is reserved
 3. Local skip check (prevents concurrent local runs)
-4. Job runs
+4. Retries run inside the reservation
+5. Job runs
+
+`SkipDuplicateRuns` must come before `RetryWithBackoff`, `RetryOnError` and `CircuitBreaker`: those drop the job context, and without the scheduled time from it the wrapper skips the run and logs an error.
 
 ## Lock TTL Considerations
 
@@ -349,6 +361,7 @@ Set lock TTL appropriately:
 
 | Scenario | TTL Recommendation |
 |----------|-------------------|
+| `SkipDuplicateRuns` | Longer than the largest clock difference between instances; job duration does not matter |
 | Quick job (<1 min) | 2-5 minutes |
 | Medium job (1-10 min) | Job duration × 2 |
 | Long job (>10 min) | Job duration + buffer, or use lock extension |
@@ -356,7 +369,7 @@ Set lock TTL appropriately:
 
 ### Lock Extension for Long Jobs
 
-For jobs with unpredictable duration, extend the lock periodically:
+For jobs with unpredictable duration, extend the lock periodically. This example uses [redsync](https://github.com/go-redsync/redsync), which implements the Redlock algorithm; it serializes runs and does not deduplicate a scheduled time:
 
 ```go
 func WithRedisLockExtending(rs *redsync.Redsync, lockName string, ttl time.Duration) cron.JobWrapper {
@@ -495,7 +508,7 @@ func TestDistributedLockRunsWhenAvailable(t *testing.T) {
 
 | Backend | Best For | Pros | Cons |
 |---------|----------|------|------|
-| **Redis (redsync)** | Most deployments | Fast, well-tested, Redlock algorithm | Requires Redis |
+| **Redis** | Most deployments | Fast, `SET NX PX` is one atomic call | Requires Redis |
 | **PostgreSQL** | Already using Postgres | No extra infra | Single point of failure |
 | **etcd** | Kubernetes environments | Built for coordination | More complex setup |
 | **Consul** | HashiCorp stack | Service mesh integration | Another service to run |
@@ -516,4 +529,5 @@ If you need sophisticated distributed scheduling with built-in coordination:
 - [PERSISTENCE_GUIDE.md](PERSISTENCE_GUIDE.md) - Persist job state across restarts
 - [OPERATIONS.md](OPERATIONS.md) - Production deployment patterns
 - [COOKBOOK.md](COOKBOOK.md) - Common integration recipes
-- [ADR-020](adr/ADR-020-feature-scope-boundary.md) - Why distributed locking is out of scope
+- [ADR-025](adr/ADR-025-locker-interface.md) - The `Locker` interface and its wrappers
+- [ADR-020](adr/ADR-020-feature-scope-boundary.md) - Why the stores stay out of the library

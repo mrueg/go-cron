@@ -2089,6 +2089,23 @@ job := cron.NewChain(
 ).Then(reportJob)
 ```
 
+#### func SkipWhileLocked
+
+```go
+func SkipWhileLocked(locker Locker, key string, ttl time.Duration, logger Logger) JobWrapper
+```
+
+SkipWhileLocked lets jobs that use one resource run one at a time across all scheduler instances that share `locker`. Before each run it reserves `key`, the resource name, for `ttl`; a run that finds it taken is skipped and logged. The key is released when the run ends, also after a panic. It does not deduplicate a scheduled time; use `SkipDuplicateRuns` for that. `ttl` must exceed the longest run. A locker error skips the run and logs an error; a skipped run counts as `ResultSkipped` in a workflow. Within one process, `ConcurrencyGroups` also offers a waiting variant.
+
+Panics if `key` is empty or `ttl <= 0`.
+
+**Example:**
+```go
+// backup and reindex never run at the same time on any instance.
+c.AddJob("0 * * * *", cron.NewChain(cron.SkipWhileLocked(locker, "db", time.Hour, logger)).Then(backup))
+c.AddJob("*/15 * * * *", cron.NewChain(cron.SkipWhileLocked(locker, "db", time.Hour, logger)).Then(reindex))
+```
+
 #### type Locker
 
 ```go
