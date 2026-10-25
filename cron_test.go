@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -5983,5 +5984,64 @@ func TestDrainAndUpsertRecreatesIfRemovedDuringDrain(t *testing.T) {
 	}
 	if !c.EntryByName("vanishing").Valid() {
 		t.Fatal("entry should have been re-created after concurrent removal")
+	}
+}
+
+// TestEntryIDWraparoundSkipsZero pins ADR-009: EntryID(0) is the invalid
+// sentinel, so ID allocation skips 0 when the counter wraps around.
+func TestEntryIDWraparoundSkipsZero(t *testing.T) {
+	c := New()
+	c.nextID = EntryID(math.MaxUint64 - 1)
+
+	last, err := c.AddFunc("@every 1h", func() {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last != EntryID(math.MaxUint64) {
+		t.Fatalf("expected ID %d before the wraparound, got %d", uint64(math.MaxUint64), last)
+	}
+
+	wrapped, err := c.AddFunc("@every 1h", func() {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wrapped != 1 {
+		t.Errorf("expected the wrapped ID to skip 0 and be 1, got %d", wrapped)
+	}
+	if !c.Entry(wrapped).Valid() {
+		t.Errorf("entry with wrapped ID %d is not valid", wrapped)
+	}
+}
+
+// recordingClock is a FakeClock that records the duration of every timer.
+type recordingClock struct {
+	*FakeClock
+	mu        sync.Mutex
+	durations []time.Duration
+}
+
+func (r *recordingClock) NewTimer(d time.Duration) Timer {
+	r.mu.Lock()
+	r.durations = append(r.durations, d)
+	r.mu.Unlock()
+	return r.FakeClock.NewTimer(d)
+}
+
+// TestIdleSchedulerSleepsFiniteDuration pins ADR-014: with no entries, the run
+// loop waits on a finite timer of 100,000 hours, not on an infinite one.
+func TestIdleSchedulerSleepsFiniteDuration(t *testing.T) {
+	clock := &recordingClock{FakeClock: NewFakeClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))}
+	c := New(WithClock(clock))
+	c.Start()
+	defer c.Stop()
+	clock.BlockUntil(1)
+
+	clock.mu.Lock()
+	defer clock.mu.Unlock()
+	if len(clock.durations) == 0 {
+		t.Fatal("the idle run loop created no timer")
+	}
+	if got, want := clock.durations[0], 100000*time.Hour; got != want {
+		t.Errorf("idle timer duration = %v, want %v", got, want)
 	}
 }

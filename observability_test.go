@@ -4,7 +4,9 @@
 package cron
 
 import (
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -393,5 +395,85 @@ func BenchmarkObservabilityHooks_NilOverhead(b *testing.B) {
 		h.callOnJobComplete(EntryID(i), FuncJob(func() {}), time.Second, nil)
 		h.callOnSchedule(EntryID(i), FuncJob(func() {}), time.Now())
 		i++
+	}
+}
+
+// TestObservabilityHooks_BlockingHookDoesNotDelayScheduler pins ADR-003: hooks
+// run in their own goroutines, so a hook that never returns must not delay
+// later job runs.
+func TestObservabilityHooks_BlockingHookDoesNotDelayScheduler(t *testing.T) {
+	release := make(chan struct{})
+
+	clock := NewFakeClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	c := New(WithClock(clock), WithParser(secondParser), WithObservability(ObservabilityHooks{
+		OnJobStart: func(EntryID, string, time.Time) { <-release },
+		OnSchedule: func(EntryID, string, time.Time) { <-release },
+	}))
+
+	var runs atomic.Int32
+	if _, err := c.AddFunc("* * * * * *", func() { runs.Add(1) }); err != nil {
+		t.Fatal(err)
+	}
+	c.Start()
+	defer c.Stop()
+	defer close(release) // runs before Stop, so a blocked run loop can finish
+
+	for i := range int32(3) {
+		waited := make(chan struct{})
+		go func() { clock.BlockUntil(1); close(waited) }()
+		select {
+		case <-waited:
+		case <-time.After(2 * time.Second):
+			t.Fatal("scheduler stopped waiting for its timer: a blocking hook held it")
+		}
+		clock.Advance(time.Second)
+		waitUntil(t, "job run while every hook blocks", func() bool { return runs.Load() == i+1 })
+	}
+}
+
+// TestObservabilityHooks_PanickingHookIsContained pins ADR-003: a hook that
+// panics is recovered and logged, and neither the process nor the scheduler
+// stops. Without the recovery, the panic in the hook goroutine ends the test
+// binary.
+func TestObservabilityHooks_PanickingHookIsContained(t *testing.T) {
+	var buf syncWriter
+	clock := NewFakeClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	panicking := func() { panic("hook failed") }
+	c := New(WithClock(clock), WithParser(secondParser), WithLogger(newBufLogger(&buf)),
+		WithObservability(ObservabilityHooks{
+			OnJobStart:    func(EntryID, string, time.Time) { panicking() },
+			OnJobComplete: func(EntryID, string, time.Duration, any) { panicking() },
+			OnSchedule:    func(EntryID, string, time.Time) { panicking() },
+		}))
+
+	var runs atomic.Int32
+	if _, err := c.AddFunc("* * * * * *", func() { runs.Add(1) }); err != nil {
+		t.Fatal(err)
+	}
+	c.Start()
+	defer c.Stop()
+
+	for i := range int32(2) {
+		clock.BlockUntil(1)
+		clock.Advance(time.Second)
+		waitUntil(t, "job run despite panicking hooks", func() bool { return runs.Load() == i+1 })
+	}
+	for _, hook := range []string{"OnJobStart", "OnJobComplete", "OnSchedule"} {
+		waitUntil(t, "logged "+hook+" panic", func() bool { return strings.Contains(buf.String(), "hook="+hook) })
+	}
+}
+
+// waitUntil polls cond until it holds, and fails the test after two seconds.
+// Hooks and jobs run in their own goroutines, so a fixed sleep after Advance
+// cannot tell a slow goroutine from a missing one.
+func waitUntil(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for !cond() {
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for %s", what)
+		case <-time.After(time.Millisecond):
+		}
 	}
 }

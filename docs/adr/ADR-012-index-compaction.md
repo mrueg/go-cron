@@ -38,27 +38,28 @@ func (c *Cron) maybeCompactIndexes() {
     if c.indexDeletions < indexCompactionThreshold {
         return
     }
-    // Only compact if deletions are significant portion
-    if c.indexDeletions < len(c.entryIndex)/2 {
+    // Only compact once more entries were deleted than remain
+    currentSize := len(c.entryIndex)
+    if currentSize > 0 && c.indexDeletions <= currentSize {
         return
     }
 
-    // Rebuild maps from heap (source of truth)
-    c.entryIndex = make(map[EntryID]*Entry, len(c.entries))
-    c.nameIndex = make(map[string]*Entry)
-    for _, e := range c.entries {
-        c.entryIndex[e.ID] = e
-        if e.Name != "" {
-            c.nameIndex[e.Name] = e
-        }
-    }
+    // Copy the live entries into right-sized new maps; Go maps never shrink
+    newEntryIndex := make(map[EntryID]*Entry, currentSize)
+    maps.Copy(newEntryIndex, c.entryIndex)
+    c.entryIndex = newEntryIndex
+    newNameIndex := make(map[string]*Entry, len(c.nameIndex))
+    maps.Copy(newNameIndex, c.nameIndex)
+    c.nameIndex = newNameIndex
     c.indexDeletions = 0
 }
 ```
 
 **Trigger conditions:**
 1. At least 1000 deletions since last compaction
-2. Deletions are at least 50% of current entry count
+2. More deletions than remaining entries (more than half of the entries present before the deletions are gone)
+
+**Correction (2026-10-25):** The first version of this ADR showed a 50%-of-current-entries condition and a rebuild from the heap. Neither existed in the code: the condition above dates from commit 78151c2 (2025-12-01, #107), before this ADR was written. Pinned by `TestIndexCompaction` in `cron_test.go`.
 
 ## Consequences
 
@@ -67,7 +68,7 @@ func (c *Cron) maybeCompactIndexes() {
 - **Memory reclamation**: Maps shrink after high-churn periods
 - **Bounded overhead**: Only compacts when beneficial
 - **No API changes**: Transparent to users
-- **Heap is source of truth**: Rebuild is safe and consistent
+- **Index maps stay authoritative**: Copying the live maps keeps them consistent without touching the heap
 
 ### Negative
 

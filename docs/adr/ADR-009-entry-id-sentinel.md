@@ -27,7 +27,7 @@ Options:
 Use `EntryID(0)` as the invalid/null sentinel value. Valid entries always have `ID >= 1`.
 
 ```go
-type EntryID int
+type EntryID uint64
 
 // Entry.Valid() returns true if this is not the zero entry
 func (e Entry) Valid() bool { return e.ID != 0 }
@@ -57,12 +57,12 @@ if c.nextID == 0 {
 ### Negative
 
 - **Wraparound handling**: Must explicitly skip 0 during ID allocation
-- **Signed type**: `EntryID` is `int`, so negative IDs are technically valid (though never assigned)
+- **Unsigned type**: `EntryID` is `uint64` since commit 86e7626 (2025-11-26), so negative IDs cannot occur
 - **Documentation needed**: Users must know 0 is reserved
 
 ### Neutral
 
-- **Large ID space**: With `int` (64-bit on most systems), wraparound is practically impossible in normal use
+- **Large ID space**: With `uint64`, wraparound is practically impossible in normal use; if it happens, allocation skips 0 (pinned by `TestEntryIDWraparoundSkipsZero`)
 
 ## Alternatives Considered
 

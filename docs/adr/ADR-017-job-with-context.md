@@ -42,6 +42,8 @@ func (c *Cron) startJob(job Job) {
 }
 ```
 
+**Update (2026-10-25):** Since v0.11.0 (2026-02-12) the scheduler passes each entry its own context, derived from `baseCtx`, instead of `baseCtx` itself. `Remove()` and replacing an entry cancel that entry's context; `Stop()` still cancels all of them through `baseCtx`. The snippets below show the original design. Pinned by `TestJobWithContext_ReceivesContext` and `TestJobWithContext_CanceledOnStop` in `cron_test.go`.
+
 **Usage:**
 ```go
 type MyJob struct{}

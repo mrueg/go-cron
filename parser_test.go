@@ -923,25 +923,6 @@ func TestParserWithCache(t *testing.T) {
 		}
 	})
 
-	t.Run("caches errors too", func(t *testing.T) {
-		parser := NewParser(Minute | Hour | Dom | Month | Dow).WithCache()
-
-		_, err1 := parser.Parse("invalid spec")
-		if err1 == nil {
-			t.Fatal("first parse should fail")
-		}
-
-		_, err2 := parser.Parse("invalid spec")
-		if err2 == nil {
-			t.Fatal("second parse should fail")
-		}
-
-		// Error messages should match (same cached error)
-		if err1.Error() != err2.Error() {
-			t.Errorf("cached error mismatch: %v vs %v", err1, err2)
-		}
-	})
-
 	t.Run("different specs return different schedules", func(t *testing.T) {
 		parser := NewParser(Minute | Hour | Dom | Month | Dow | Descriptor).WithCache()
 
@@ -2392,5 +2373,21 @@ func TestMustParseInt_Zero(t *testing.T) {
 	}
 	if val != 0 {
 		t.Errorf("mustParseInt(\"0\") = %d, want 0", val)
+	}
+}
+
+// TestParserWithCacheStoresErrors pins ADR-006: the cache also stores a parse
+// error, so the second call returns the stored error value itself. Equal
+// messages alone would also match without a cache.
+func TestParserWithCacheStoresErrors(t *testing.T) {
+	parser := NewParser(Minute | Hour | Dom | Month | Dow).WithCache()
+
+	_, err1 := parser.Parse("invalid spec")
+	_, err2 := parser.Parse("invalid spec")
+	if err1 == nil || err2 == nil {
+		t.Fatalf("both parses should fail, got %v and %v", err1, err2)
+	}
+	if err1 != err2 { //nolint:errorlint // identity is the point: same cached value
+		t.Errorf("expected the cached error value, got a new one: %v vs %v", err1, err2)
 	}
 }

@@ -5,6 +5,8 @@ package cron
 
 import (
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -415,4 +417,51 @@ func TestCompactionThresholdBoundary(t *testing.T) {
 			t.Errorf("entry %d should still be valid", ids[i])
 		}
 	}
+}
+
+// TestMaxEntriesExactUnderConcurrency pins ADR-019: concurrent adds never
+// overshoot the limit, whether or not the scheduler is running.
+func TestMaxEntriesExactUnderConcurrency(t *testing.T) {
+	const maxEntries, attempts = 50, 200
+	for _, running := range []bool{false, true} {
+		t.Run(map[bool]string{false: "stopped", true: "running"}[running], func(t *testing.T) {
+			c := New(WithMaxEntries(maxEntries))
+			if running {
+				c.Start()
+				defer c.Stop()
+			}
+
+			added, rejected := addConcurrently(t, c, attempts)
+			if added != maxEntries || rejected != attempts-maxEntries {
+				t.Errorf("added = %d, rejected = %d, want exactly %d and %d",
+					added, rejected, maxEntries, attempts-maxEntries)
+			}
+			if got := len(c.Entries()); got != maxEntries {
+				t.Errorf("entries = %d, want exactly %d", got, maxEntries)
+			}
+		})
+	}
+}
+
+// addConcurrently calls AddFunc from n goroutines at once and counts the
+// successful adds and the ErrMaxEntriesReached rejections.
+func addConcurrently(t *testing.T, c *Cron, n int) (added, rejected int) {
+	t.Helper()
+	var ok, full atomic.Int32
+	var wg sync.WaitGroup
+	for range n {
+		wg.Go(func() {
+			_, err := c.AddFunc("@every 1h", func() {})
+			switch {
+			case err == nil:
+				ok.Add(1)
+			case errors.Is(err, ErrMaxEntriesReached):
+				full.Add(1)
+			default:
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+	wg.Wait()
+	return int(ok.Load()), int(full.Load())
 }

@@ -58,6 +58,8 @@ Jobs during the repeated hour run once, during the first occurrence:
 
 **Rationale:** ISC cron runs jobs once per scheduled time, not once per wall-clock occurrence.
 
+The scheduler enforces this rule, not the schedule: `Schedule.Next()` returns both occurrences, and a caller that uses `Next()` directly sees both (see "Preventing Duplicate Execution During Fall-Back" below). Pinned by `TestDSTFallBack_SchedulerDedup` in `cron_test.go`.
+
 ## Consequences
 
 ### Positive
