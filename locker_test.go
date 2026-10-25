@@ -269,3 +269,112 @@ func TestSkipDuplicateRunsPanicsOnBadArguments(t *testing.T) {
 		})
 	}
 }
+
+// While one job holds the resource key, a run of another job on that key is
+// skipped and marked as skipped for a workflow; once the first run ends and
+// releases the key, the other job runs.
+func TestSkipWhileLockedExcludesByKey(t *testing.T) {
+	t.Parallel()
+	locker := NewMemoryLocker(NewFakeClock(time.Date(2026, 10, 26, 9, 0, 0, 0, time.UTC)))
+	started, release := make(chan struct{}), make(chan struct{})
+	backup := SkipWhileLocked(locker, "db", time.Hour, DiscardLogger)(FuncJob(func() {
+		close(started)
+		<-release
+	}))
+	var reindexRuns atomic.Int32
+	reindex := SkipWhileLocked(locker, "db", time.Hour, DiscardLogger)(FuncJob(func() { reindexRuns.Add(1) }))
+
+	done := make(chan struct{})
+	go func() { backup.Run(); close(done) }()
+	<-started
+
+	var skipped atomic.Bool
+	RunJob(context.WithValue(context.Background(), runSkippedKey{}, &skipped), reindex)
+	if reindexRuns.Load() != 0 || !skipped.Load() {
+		t.Errorf("while the key was held: runs = %d, marked skipped = %v, want 0 and true", reindexRuns.Load(), skipped.Load())
+	}
+
+	close(release)
+	<-done
+	reindex.Run()
+	if got := reindexRuns.Load(); got != 1 {
+		t.Errorf("runs after the key was released = %d, want 1", got)
+	}
+}
+
+// A panicking job still releases the key, so the resource does not stay
+// blocked until the ttl expires.
+func TestSkipWhileLockedReleasesOnPanic(t *testing.T) {
+	t.Parallel()
+	locker := NewMemoryLocker(NewFakeClock(time.Date(2026, 10, 26, 9, 0, 0, 0, time.UTC)))
+	w := SkipWhileLocked(locker, "db", time.Hour, DiscardLogger)
+	func() {
+		defer func() { _ = recover() }()
+		w(FuncJob(func() { panic("job failed") })).Run()
+	}()
+	var runs atomic.Int32
+	w(FuncJob(func() { runs.Add(1) })).Run()
+	if got := runs.Load(); got != 1 {
+		t.Errorf("runs after a panicking run = %d, want 1", got)
+	}
+}
+
+func TestSkipWhileLockedFailsClosed(t *testing.T) {
+	t.Parallel()
+	var runs atomic.Int32
+	var skipped atomic.Bool
+	log := &recordingLogger{}
+	ctx := context.WithValue(context.Background(), runSkippedKey{}, &skipped)
+	RunJob(ctx, SkipWhileLocked(failingLocker{}, "db", time.Hour, log)(FuncJob(func() { runs.Add(1) })))
+	if runs.Load() != 0 || log.errs.Load() != 1 || !skipped.Load() {
+		t.Errorf("locker error: runs = %d, logged errors = %d, marked skipped = %v, want 0, 1 and true",
+			runs.Load(), log.errs.Load(), skipped.Load())
+	}
+}
+
+// infoJob records the RunInfo of the context it runs with.
+type infoJob struct {
+	ran  bool
+	info RunInfo
+	ok   bool
+}
+
+func (j *infoJob) Run() { j.RunWithContext(context.Background()) }
+
+func (j *infoJob) RunWithContext(ctx context.Context) {
+	j.ran = true
+	j.info, j.ok = RunInfoFromContext(ctx)
+}
+
+// The inner job gets the run's context, so a context-aware job or wrapper
+// inside keeps RunInfo and the entry's cancellation.
+func TestSkipWhileLockedPassesContext(t *testing.T) {
+	t.Parallel()
+	info := RunInfo{ScheduledTime: time.Date(2026, 10, 26, 9, 0, 0, 0, time.UTC), Trigger: TriggerScheduled}
+	inner := &infoJob{}
+	runWithInfo(SkipWhileLocked(NewMemoryLocker(nil), "db", time.Hour, DiscardLogger)(inner), info)
+	if !inner.ran {
+		t.Fatal("inner job did not run")
+	}
+	if !inner.ok || inner.info != info {
+		t.Errorf("inner job's RunInfo = %+v, %v, want %+v, true", inner.info, inner.ok, info)
+	}
+}
+
+func TestSkipWhileLockedPanicsOnBadArguments(t *testing.T) {
+	t.Parallel()
+	for name, f := range map[string]func(){
+		"empty key": func() { SkipWhileLocked(NewMemoryLocker(nil), "", time.Minute, DiscardLogger) },
+		"zero ttl":  func() { SkipWhileLocked(NewMemoryLocker(nil), "db", 0, DiscardLogger) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			defer func() {
+				if recover() == nil {
+					t.Error("no panic")
+				}
+			}()
+			f()
+		})
+	}
+}

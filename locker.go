@@ -191,3 +191,68 @@ func SkipDuplicateRuns(locker Locker, name string, ttl time.Duration, logger Log
 		return &dedupJob{inner: j, locker: locker, name: name, ttl: ttl, logger: logger}
 	}
 }
+
+// exclusiveJob implements Job and JobWithContext for SkipWhileLocked.
+type exclusiveJob struct {
+	inner  Job
+	locker Locker
+	key    string
+	ttl    time.Duration
+	logger Logger
+}
+
+// Run implements Job by delegating to RunWithContext with context.Background().
+func (e *exclusiveJob) Run() {
+	e.RunWithContext(context.Background())
+}
+
+// RunWithContext implements JobWithContext.
+func (e *exclusiveJob) RunWithContext(ctx context.Context) {
+	release, ok, err := e.locker.TryLock(ctx, e.key, e.ttl)
+	if err != nil {
+		e.logger.Error(err, "skip", "key", e.key, "reason", "locker failed")
+		markRunSkipped(ctx)
+		return
+	}
+	if !ok {
+		e.logger.Info("skip", "key", e.key, "reason", "resource in use")
+		markRunSkipped(ctx)
+		return
+	}
+	defer release()
+	RunJob(ctx, e.inner)
+}
+
+// SkipWhileLocked lets jobs that use one resource run one at a time across
+// all scheduler instances that share locker. Before each run it reserves key,
+// the name of the resource, for ttl; if another run holds it, this run is
+// skipped and logged. The reservation is released when the run ends, so the
+// next run of any job on that key can start. Unlike SkipDuplicateRuns, this
+// does not deduplicate a scheduled time: an instance whose clock is late runs
+// again once the reservation is released.
+//
+// ttl must exceed the longest run. If a run outlasts it, the reservation
+// expires and another run can start alongside it.
+//
+// The run is skipped, and an error logged, when the locker returns an error.
+// A skipped run counts as ResultSkipped in a workflow. Within one process,
+// ConcurrencyGroups gives the same exclusion with a waiting variant.
+//
+// key must not be empty and ttl must be positive; otherwise it panics.
+//
+// Example:
+//
+//	// backup and reindex never run at the same time on any instance.
+//	c.AddJob("0 * * * *", cron.NewChain(cron.SkipWhileLocked(locker, "db", time.Hour, logger)).Then(backup))
+//	c.AddJob("*/15 * * * *", cron.NewChain(cron.SkipWhileLocked(locker, "db", time.Hour, logger)).Then(reindex))
+func SkipWhileLocked(locker Locker, key string, ttl time.Duration, logger Logger) JobWrapper {
+	if key == "" {
+		panic("cron: SkipWhileLocked requires a key")
+	}
+	if ttl <= 0 {
+		panic("cron: SkipWhileLocked requires ttl > 0")
+	}
+	return func(j Job) Job {
+		return &exclusiveJob{inner: j, locker: locker, key: key, ttl: ttl, logger: logger}
+	}
+}
