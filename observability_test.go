@@ -418,7 +418,7 @@ func TestObservabilityHooks_BlockingHookDoesNotDelayScheduler(t *testing.T) {
 	defer c.Stop()
 	defer close(release) // runs before Stop, so a blocked run loop can finish
 
-	for range 3 {
+	for i := range int32(3) {
 		waited := make(chan struct{})
 		go func() { clock.BlockUntil(1); close(waited) }()
 		select {
@@ -427,10 +427,7 @@ func TestObservabilityHooks_BlockingHookDoesNotDelayScheduler(t *testing.T) {
 			t.Fatal("scheduler stopped waiting for its timer: a blocking hook held it")
 		}
 		clock.Advance(time.Second)
-		time.Sleep(20 * time.Millisecond)
-	}
-	if got := runs.Load(); got != 3 {
-		t.Errorf("expected 3 runs while every hook blocks, got %d", got)
+		waitUntil(t, "job run while every hook blocks", func() bool { return runs.Load() == i+1 })
 	}
 }
 
@@ -456,17 +453,27 @@ func TestObservabilityHooks_PanickingHookIsContained(t *testing.T) {
 	c.Start()
 	defer c.Stop()
 
-	for range 2 {
+	for i := range int32(2) {
 		clock.BlockUntil(1)
 		clock.Advance(time.Second)
-		time.Sleep(20 * time.Millisecond)
-	}
-	if got := runs.Load(); got != 2 {
-		t.Errorf("expected 2 runs despite panicking hooks, got %d", got)
+		waitUntil(t, "job run despite panicking hooks", func() bool { return runs.Load() == i+1 })
 	}
 	for _, hook := range []string{"OnJobStart", "OnJobComplete", "OnSchedule"} {
-		if !strings.Contains(buf.String(), "hook="+hook) {
-			t.Errorf("expected the %s panic to be logged, log:\n%s", hook, buf.String())
+		waitUntil(t, "logged "+hook+" panic", func() bool { return strings.Contains(buf.String(), "hook="+hook) })
+	}
+}
+
+// waitUntil polls cond until it holds, and fails the test after two seconds.
+// Hooks and jobs run in their own goroutines, so a fixed sleep after Advance
+// cannot tell a slow goroutine from a missing one.
+func waitUntil(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for !cond() {
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for %s", what)
+		case <-time.After(time.Millisecond):
 		}
 	}
 }
