@@ -2066,6 +2066,47 @@ c := cron.New(cron.WithChain(
 ))
 ```
 
+#### func SkipDuplicateRuns
+
+```go
+func SkipDuplicateRuns(locker Locker, name string, ttl time.Duration, logger Logger) JobWrapper
+```
+
+SkipDuplicateRuns lets one scheduled time of a job run once across all scheduler instances that share `locker`. Before a scheduled run or a catch-up it reserves the key `name@<scheduled time in UTC>` for `ttl`; the instance that gets the reservation runs the job, every other instance skips that time. The reservation is not released after the run, so an instance with a late clock still finds the time taken. Manual, dependency and immediate runs carry their start time and run without a reservation.
+
+- `name` must be the same on every instance; `ttl` must exceed the largest clock difference between them. All instances need the same spec and time zone. `@every` counts from each instance's own start, so it cannot be deduplicated; use a cron expression.
+- A skipped run counts as `ResultSkipped` in a workflow, so dependents of a parent run only on the instance that ran the parent.
+- The run is skipped and an error logged when the locker fails or the context carries no `RunInfo`. Place it before `RetryWithBackoff`, `RetryOnError` and `CircuitBreaker`, which drop the context.
+- At most once: if the holder stops during the run, no other instance runs that time.
+
+Panics if `name` is empty or `ttl <= 0`. See [ADR-025](adr/ADR-025-locker-interface.md).
+
+**Example:**
+```go
+job := cron.NewChain(
+    cron.SkipDuplicateRuns(redisLocker, "nightly-report", 10*time.Minute, logger),
+    cron.RetryWithBackoff(logger, 3, time.Second, time.Minute, 2),
+).Then(reportJob)
+```
+
+#### type Locker
+
+```go
+type Locker interface {
+    TryLock(ctx context.Context, key string, ttl time.Duration) (release func(), ok bool, err error)
+}
+```
+
+Locker reserves keys for coordination between scheduler instances. `TryLock` does not wait: `ok` is false if the key is reserved, and a non-nil `err` means the store could not answer. `release` ends the reservation early and must not remove a reservation that another caller took after this one expired. go-cron ships only `MemoryLocker`; an implementation for several processes wraps a shared store (Redis `SET NX PX`, a SQL insert on a unique key) in user code.
+
+#### func NewMemoryLocker
+
+```go
+func NewMemoryLocker(clock Clock) *MemoryLocker
+```
+
+NewMemoryLocker returns a `Locker` for one process, reading the time from `clock` (the system clock if nil). Use it for several schedulers in one process and as a test double. Expired keys are removed by `TryLock`, so the never-released keys of `SkipDuplicateRuns` do not accumulate.
+
 #### func RetryWithBackoff
 
 ```go

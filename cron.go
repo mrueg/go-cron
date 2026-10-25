@@ -1482,8 +1482,10 @@ func (c *Cron) startJobWithExecution(entryCtx context.Context, entryRunning *job
 	entryRunning.start()
 
 	runCtx := context.WithValue(entryCtx, runInfoContextKey{}, info)
+	var skipped atomic.Bool
 	if executionID != "" {
 		runCtx = context.WithValue(runCtx, workflowContextKey{}, executionID)
+		runCtx = context.WithValue(runCtx, runSkippedKey{}, &skipped)
 	}
 
 	go func() {
@@ -1514,6 +1516,7 @@ func (c *Cron) startJobWithExecution(entryCtx context.Context, entryRunning *job
 			case c.jobDone <- jobDoneEvent{
 				EntryID:     entryID,
 				Panicked:    recovered != nil,
+				Skipped:     skipped.Load(),
 				PanicValue:  recovered,
 				ExecutionID: executionID,
 			}:
@@ -1537,9 +1540,12 @@ func (c *Cron) processWorkflowEvent(event jobDoneEvent) {
 		return
 	}
 
-	if event.Panicked {
+	switch {
+	case event.Panicked:
 		exec.Results[event.EntryID] = ResultFailure
-	} else {
+	case event.Skipped:
+		exec.Results[event.EntryID] = ResultSkipped
+	default:
 		exec.Results[event.EntryID] = ResultSuccess
 	}
 
