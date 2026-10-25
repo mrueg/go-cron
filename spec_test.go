@@ -5,6 +5,7 @@ package cron
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -657,6 +658,92 @@ func TestPrevAndNextSymmetry(t *testing.T) {
 			}
 		})
 	}
+}
+
+// springForwardNY returns 2026-03-<day> <hour>:<minute> in New York. On
+// 2026-03-08 New York clocks jump from 02:00 EST to 03:00 EDT.
+func springForwardNY(t *testing.T, day, hour, minute int) time.Time {
+	t.Helper()
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return time.Date(2026, 3, day, hour, minute, 0, 0, ny)
+}
+
+// TestPrevDSTSpringForward checks that Prev returns the run that Next produces
+// for a job in the hour skipped by DST spring-forward (ISC cron behavior).
+func TestPrevDSTSpringForward(t *testing.T) {
+	at := func(day, hour, minute int) time.Time { return springForwardNY(t, day, hour, minute) }
+	runs := []struct {
+		spec     string
+		from     time.Time
+		expected time.Time
+	}{
+		{"30 2 * * *", at(9, 0, 0), at(8, 3, 30)},
+		{"30 2 * * *", at(8, 3, 31), at(8, 3, 30)},
+		{"30 2 * * *", at(8, 3, 30), at(7, 2, 30)},
+		{"30 2 * * *", at(8, 3, 10), at(7, 2, 30)},
+		{"*/15 2 * * *", at(8, 4, 0), at(8, 3, 0)},
+		{"0 2 * * *", at(8, 12, 0), at(8, 3, 0)},
+		{"0 1,2 * * *", at(8, 3, 0), at(8, 1, 0)},
+	}
+	for _, c := range runs {
+		t.Run(c.spec+"_from_"+c.from.String(), func(t *testing.T) {
+			sched, err := ParseStandard(c.spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			actual := sched.(ScheduleWithPrev).Prev(c.from)
+			if !actual.Equal(c.expected) {
+				t.Errorf("Prev(%v) = %v, want %v", c.from, actual, c.expected)
+			}
+		})
+	}
+}
+
+// TestPrevNextDSTSymmetry checks that Prev walked backwards over the
+// spring-forward day yields exactly the runs that Next yields forwards.
+func TestPrevNextDSTSymmetry(t *testing.T) {
+	start, end := springForwardNY(t, 7, 0, 0), springForwardNY(t, 9, 12, 0)
+	specs := []struct {
+		parser ScheduleParser
+		spec   string
+	}{
+		{standardParser, "30 2 * * *"},
+		{standardParser, "*/15 2 * * *"},
+		{standardParser, "0 2 * * *"},
+		{standardParser, "0 1,2 * * *"},
+		{standardParser, "*/20 1,2 * * *"},
+		{standardParser, "30 1-3 * * *"},
+		{standardParser, "0 * * * *"},
+		{secondParser, "15 30 2 * * *"},
+	}
+	for _, c := range specs {
+		t.Run(c.spec, func(t *testing.T) {
+			sched, err := c.parser.Parse(c.spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			forward, backward := runsBetween(sched, start, end)
+			if !slices.EqualFunc(forward, backward, time.Time.Equal) {
+				t.Errorf("Next and Prev disagree\nnext: %v\nprev: %v", forward, backward)
+			}
+		})
+	}
+}
+
+// runsBetween lists the runs strictly between start and end in ascending
+// order, once collected with Next and once with Prev.
+func runsBetween(sched Schedule, start, end time.Time) (forward, backward []time.Time) {
+	for n := sched.Next(start); n.Before(end); n = sched.Next(n) {
+		forward = append(forward, n)
+	}
+	for p := sched.(ScheduleWithPrev).Prev(end); p.After(start); p = sched.(ScheduleWithPrev).Prev(p) {
+		backward = append(backward, p)
+	}
+	slices.Reverse(backward)
+	return forward, backward
 }
 
 // TestDayMatchesANDMode tests the default AND logic for DOM/DOW matching.
