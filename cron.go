@@ -1240,7 +1240,7 @@ func (c *Cron) processDueEntries(now time.Time) {
 		if len(c.parentToChildren[e.ID]) > 0 {
 			c.startWorkflowExecution(e, scheduledTime, TriggerScheduled)
 		} else {
-			c.startJob(e.entryCtx, e.running, e.ID, e.Job, e.WrappedJob, scheduledTime, TriggerScheduled)
+			c.startJob(e.entryCtx, e.running, e.ID, e.Job, e.WrappedJob, RunInfo{ScheduledTime: scheduledTime, Trigger: TriggerScheduled})
 		}
 		e.Prev = e.Next
 		c.postDispatchScheduled(e, now)
@@ -1421,15 +1421,15 @@ func (c *Cron) run() {
 // per-entry context, allowing the job to receive cancellation signals when the entry
 // is removed, its job is replaced, or Stop() is called (which cancels baseCtx,
 // cascading to all entry contexts).
-func (c *Cron) startJob(entryCtx context.Context, entryRunning *jobTracker, entryID EntryID, originalJob, wrappedJob Job, scheduledTime time.Time, trigger TriggerKind) {
-	c.startJobWithExecution(entryCtx, entryRunning, entryID, originalJob, wrappedJob, scheduledTime, trigger, "")
+func (c *Cron) startJob(entryCtx context.Context, entryRunning *jobTracker, entryID EntryID, originalJob, wrappedJob Job, info RunInfo) {
+	c.startJobWithExecution(entryCtx, entryRunning, entryID, originalJob, wrappedJob, info, "")
 }
 
-func (c *Cron) startJobWithExecution(entryCtx context.Context, entryRunning *jobTracker, entryID EntryID, originalJob, wrappedJob Job, scheduledTime time.Time, trigger TriggerKind, executionID string) {
+func (c *Cron) startJobWithExecution(entryCtx context.Context, entryRunning *jobTracker, entryID EntryID, originalJob, wrappedJob Job, info RunInfo, executionID string) {
 	c.jobWaiter.Add(1)
 	entryRunning.start()
 
-	runCtx := context.WithValue(entryCtx, runInfoContextKey{}, RunInfo{ScheduledTime: scheduledTime, Trigger: trigger})
+	runCtx := context.WithValue(entryCtx, runInfoContextKey{}, info)
 	if executionID != "" {
 		runCtx = context.WithValue(runCtx, workflowContextKey{}, executionID)
 	}
@@ -1438,7 +1438,7 @@ func (c *Cron) startJobWithExecution(entryCtx context.Context, entryRunning *job
 		defer c.jobWaiter.Done()
 		defer entryRunning.finish()
 
-		c.hooks.callOnJobStart(entryID, originalJob, scheduledTime)
+		c.hooks.callOnJobStart(entryID, originalJob, info.ScheduledTime)
 
 		start := c.clock.Now()
 		var recovered any
@@ -1557,7 +1557,7 @@ func (c *Cron) triggerWorkflowChild(exec *WorkflowExecution, childID EntryID) {
 	}
 
 	now := c.now()
-	c.startJobWithExecution(entry.entryCtx, entry.running, entry.ID, entry.Job, entry.WrappedJob, now, TriggerDependency, exec.ID)
+	c.startJobWithExecution(entry.entryCtx, entry.running, entry.ID, entry.Job, entry.WrappedJob, RunInfo{ScheduledTime: now, Trigger: TriggerDependency}, exec.ID)
 	entry.Prev = now
 }
 
@@ -1590,7 +1590,7 @@ func (c *Cron) startWorkflowExecution(entry *Entry, scheduledTime time.Time, tri
 	}
 
 	c.activeExecutions[execID] = exec
-	c.startJobWithExecution(entry.entryCtx, entry.running, entry.ID, entry.Job, entry.WrappedJob, scheduledTime, trigger, execID)
+	c.startJobWithExecution(entry.entryCtx, entry.running, entry.ID, entry.Job, entry.WrappedJob, RunInfo{ScheduledTime: scheduledTime, Trigger: trigger}, execID)
 }
 
 // collectWorkflowParticipants returns all entry IDs reachable from rootID via parentToChildren (BFS).
@@ -1890,7 +1890,7 @@ func (c *Cron) triggerEntry(id EntryID) error {
 	if len(c.parentToChildren[entry.ID]) > 0 {
 		c.startWorkflowExecution(entry, now, TriggerManual)
 	} else {
-		c.startJob(entry.entryCtx, entry.running, entry.ID, entry.Job, entry.WrappedJob, now, TriggerManual)
+		c.startJob(entry.entryCtx, entry.running, entry.ID, entry.Job, entry.WrappedJob, RunInfo{ScheduledTime: now, Trigger: TriggerManual})
 	}
 	entry.Prev = now
 	c.postDispatchTriggered(entry, now)
@@ -2267,40 +2267,56 @@ func (c *Cron) removeEntry(id EntryID) *jobTracker {
 	}
 	c.entryCount.Add(-1)
 
-	// Clean up workflow dependency edges for removed entry.
-	if deps, ok := c.entryDeps[id]; ok {
-		for _, dep := range deps {
-			children := c.parentToChildren[dep.ParentID]
-			for i, cid := range children {
-				if cid == id {
-					c.parentToChildren[dep.ParentID] = slices.Delete(children, i, i+1)
-					break
-				}
-			}
-			if len(c.parentToChildren[dep.ParentID]) == 0 {
-				delete(c.parentToChildren, dep.ParentID)
-			}
-		}
-		delete(c.entryDeps, id)
-	}
-	if children, ok := c.parentToChildren[id]; ok {
-		for _, childID := range children {
-			// Remove ALL edges referencing this parent (may have multiple conditions).
-			c.entryDeps[childID] = slices.DeleteFunc(c.entryDeps[childID], func(dep Dependency) bool {
-				return dep.ParentID == id
-			})
-			if len(c.entryDeps[childID]) == 0 {
-				delete(c.entryDeps, childID)
-			}
-		}
-		delete(c.parentToChildren, id)
-	}
+	c.removeEntryDependencies(id)
 
 	// Track deletions and compact maps when threshold is met.
 	// Go maps don't release memory on delete, so we rebuild periodically.
 	c.indexDeletions++
 	c.maybeCompactIndexes()
 	return entry.running
+}
+
+// removeEntryDependencies drops every workflow dependency edge in which id is
+// the child or a parent. Must be called only where removeEntry may be called.
+func (c *Cron) removeEntryDependencies(id EntryID) {
+	c.removeEdgesAsChild(id)
+	c.removeEdgesAsParent(id)
+}
+
+// removeEdgesAsChild drops the edges from id's parents to id.
+func (c *Cron) removeEdgesAsChild(id EntryID) {
+	deps, ok := c.entryDeps[id]
+	if !ok {
+		return
+	}
+	for _, dep := range deps {
+		children := c.parentToChildren[dep.ParentID]
+		if i := slices.Index(children, id); i >= 0 {
+			c.parentToChildren[dep.ParentID] = slices.Delete(children, i, i+1)
+		}
+		if len(c.parentToChildren[dep.ParentID]) == 0 {
+			delete(c.parentToChildren, dep.ParentID)
+		}
+	}
+	delete(c.entryDeps, id)
+}
+
+// removeEdgesAsParent drops the edges from id to its children.
+func (c *Cron) removeEdgesAsParent(id EntryID) {
+	children, ok := c.parentToChildren[id]
+	if !ok {
+		return
+	}
+	for _, childID := range children {
+		// Remove ALL edges referencing this parent (may have multiple conditions).
+		c.entryDeps[childID] = slices.DeleteFunc(c.entryDeps[childID], func(dep Dependency) bool {
+			return dep.ParentID == id
+		})
+		if len(c.entryDeps[childID]) == 0 {
+			delete(c.entryDeps, childID)
+		}
+	}
+	delete(c.parentToChildren, id)
 }
 
 // indexCompactionThreshold is the minimum number of deletions before considering compaction.
