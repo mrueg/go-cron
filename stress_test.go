@@ -316,8 +316,8 @@ func TestDST_USEastern_SpringForward(t *testing.T) {
 		t.Skip("America/New_York timezone not available")
 	}
 
-	// March 10, 2024 at 2:00 AM - clocks spring forward to 3:00 AM
-	// Job scheduled for 2:30 AM should run at 3:30 AM (or be skipped)
+	// March 10, 2024 at 2:00 AM - clocks spring forward to 3:00 AM.
+	// ADR-016: the job scheduled for 2:30 AM runs once, at 3:30 AM EDT.
 	beforeDST := time.Date(2024, 3, 10, 1, 59, 0, 0, loc)
 	clock := NewFakeClock(beforeDST)
 
@@ -331,14 +331,14 @@ func TestDST_USEastern_SpringForward(t *testing.T) {
 	c.Start()
 	defer c.Stop()
 
-	// Advance past 2 AM -> 3 AM transition
-	time.Sleep(50 * time.Millisecond)
+	// Advance past the 2 AM -> 3 AM transition to 04:59 EDT.
+	clock.BlockUntil(1)
 	clock.Advance(2 * time.Hour)
 	time.Sleep(100 * time.Millisecond)
 
-	// The job may or may not run depending on DST handling
-	// What's important is the scheduler didn't crash
-	t.Logf("Job ran %d times through DST spring forward", runs.Load())
+	if got := runs.Load(); got != 1 {
+		t.Errorf("expected the skipped 2:30 job to run exactly once, got %d", got)
+	}
 }
 
 // TestDST_USEastern_FallBack tests US Eastern fall back (1st Sunday of November).
@@ -459,11 +459,15 @@ func TestDST_Australia_Sydney(t *testing.T) {
 	c.Start()
 	defer c.Stop()
 
-	time.Sleep(50 * time.Millisecond)
+	// Advance past the 2 AM -> 3 AM transition to 04:30 AEDT.
+	clock.BlockUntil(1)
 	clock.Advance(2 * time.Hour)
 	time.Sleep(100 * time.Millisecond)
 
-	t.Logf("Job ran %d times through Australia/Sydney spring forward", runs.Load())
+	// ADR-016: the skipped 2:30 job runs once, at 3:30 AEDT.
+	if got := runs.Load(); got != 1 {
+		t.Errorf("expected the skipped 2:30 job to run exactly once, got %d", got)
+	}
 }
 
 // Benchmarks for scale testing

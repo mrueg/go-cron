@@ -304,7 +304,7 @@ cases is critical for time-sensitive scheduling.
 
 Spring Forward (clocks skip an hour):
   - Jobs scheduled during the skipped hour run immediately after the transition
-  - Example: A 2:30 AM job during US spring DST runs at 3:00 AM
+  - Example: A 2:30 AM job during US spring DST runs at 3:30 AM
   - Prev reports that run as well, so it agrees with Next
   - Jobs scheduled exactly at the transition boundary may run immediately
 

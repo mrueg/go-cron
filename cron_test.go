@@ -5405,6 +5405,54 @@ func TestDSTFallBack_SchedulerDedup(t *testing.T) {
 	}
 }
 
+// TestDSTSpringForward_SchedulerRun pins ADR-016 for spring-forward: a job in
+// the skipped hour runs once, in the hour after the gap, at its scheduled
+// minute (2:30 runs at 3:30 EDT, not at 3:00). Decided in issue #41.
+func TestDSTSpringForward_SchedulerRun(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skip("America/New_York timezone not available")
+	}
+
+	// Mar 8, 2026: 2:00 AM EST → 3:00 AM EDT (spring-forward).
+	start := time.Date(2026, 3, 8, 1, 59, 0, 0, loc)
+	clock := NewFakeClock(start.UTC())
+
+	c := New(WithClock(clock), WithLocation(loc))
+
+	var runs atomic.Int32
+	c.AddFunc("30 2 * * *", func() {
+		runs.Add(1)
+	})
+
+	c.Start()
+	defer c.Stop()
+
+	// Advance to 03:29 EDT (30 real minutes): the job must not have run yet.
+	clock.BlockUntil(1)
+	clock.Advance(30 * time.Minute)
+	time.Sleep(20 * time.Millisecond)
+	if got := runs.Load(); got != 0 {
+		t.Fatalf("expected 0 runs before 03:30 EDT, got %d", got)
+	}
+
+	// Advance to 03:30 EDT: the skipped 02:30 run happens now, once.
+	clock.BlockUntil(1)
+	clock.Advance(1 * time.Minute)
+	time.Sleep(20 * time.Millisecond)
+	if got := runs.Load(); got != 1 {
+		t.Fatalf("expected 1 run at 03:30 EDT, got %d", got)
+	}
+
+	// Advance to 04:30 EDT: no further run on the transition day.
+	clock.BlockUntil(1)
+	clock.Advance(1 * time.Hour)
+	time.Sleep(20 * time.Millisecond)
+	if got := runs.Load(); got != 1 {
+		t.Errorf("expected exactly 1 run on the spring-forward day, got %d", got)
+	}
+}
+
 // TestDSTFallBack_ConstantDelay verifies that ConstantDelaySchedule (@every)
 // is NOT affected by the DST fall-back guard — fixed-interval schedules produce
 // different wall-clock times across transitions, so the guard never triggers.

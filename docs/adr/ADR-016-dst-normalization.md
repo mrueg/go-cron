@@ -24,9 +24,9 @@ Daylight Saving Time (DST) creates two edge cases:
 
 Implement ISC cron-compatible behavior using normalization functions:
 
-### Spring Forward: Run Immediately
+### Spring Forward: Run in the Hour After the Gap
 
-Jobs scheduled during the skipped hour run at the first moment after the transition:
+Jobs scheduled during the skipped hour run once, in the hour after the transition, at their scheduled minute and second (2:30 runs at 3:30; a job at 2:00 runs at 3:00). This was decided in [#41](https://github.com/netresearch/go-cron/issues/41) and is pinned by `TestNext` and `TestDSTSpringForward_SchedulerRun`. The code sketch below shows the original normalization idea; the implementation is `checkHourDSTSkip` in `spec.go`:
 
 ```go
 func normalizeDSTDay(t time.Time, loc *time.Location) time.Time {
@@ -43,7 +43,9 @@ func normalizeDSTDay(t time.Time, loc *time.Location) time.Time {
 }
 ```
 
-**Example:** Job at 2:30 AM on spring-forward day runs at 3:00 AM.
+**Example:** Job at 2:30 AM on spring-forward day runs at 3:30 AM.
+
+**Difference from Vixie cron:** Vixie cron runs the fixed-time jobs of every skipped minute right at the transition, so a 2:30 job runs at about 3:00. go-cron keeps the minute instead. Both run the job once on that day.
 
 ### Fall Back: Run Once (First Occurrence)
 
@@ -67,7 +69,7 @@ Jobs during the repeated hour run once, during the first occurrence:
 
 ### Negative
 
-- **Time shift**: Spring-forward jobs run "late" (at 3:00 instead of 2:30)
+- **Time shift**: Spring-forward jobs run one hour "late" (at 3:30 instead of 2:30)
 - **Complex logic**: DST detection requires time manipulation
 - **Timezone dependent**: Only affects locations with DST
 

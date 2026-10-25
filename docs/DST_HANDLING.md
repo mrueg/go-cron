@@ -25,7 +25,7 @@ The hour 2:00-2:59 AM does not exist
 
 | Schedule | Behavior |
 |----------|----------|
-| `0 30 2 * * *` (2:30 AM) | Runs at 3:00 AM (immediately after transition) |
+| `0 30 2 * * *` (2:30 AM) | Runs at 3:30 AM (same minute, in the hour after the transition) |
 | `0 0 3 * * *` (3:00 AM) | Runs at 3:00 AM (as scheduled) |
 | `0 0 1 * * *` (1:00 AM) | Runs at 1:00 AM (unaffected) |
 
@@ -36,7 +36,7 @@ The hour 2:00-2:59 AM does not exist
 The `checkHourDSTSkip` function in `spec.go` detects when time advances by 2 hours (indicating a DST spring-forward) and allows jobs scheduled for the skipped hour to run immediately:
 
 ```go
-// If prev.Hour() == 1 and curr.Hour() == 3, a job for 2:XX runs at 3:00
+// If prev.Hour() == 1 and curr.Hour() == 3, a job for 2:XX runs at 3:XX
 if curr.Hour()-prev.Hour() == 2 {
     // Job in skipped hour runs immediately
 }
@@ -151,8 +151,8 @@ func TestSpringForward(t *testing.T) {
     sched, _ := cron.ParseStandard("30 2 * * *") // 2:30 AM
     next := sched.Next(beforeDST)
 
-    // Should be 3:00 AM (first moment after skipped hour)
-    expected := time.Date(2024, 3, 10, 3, 0, 0, 0, nyc)
+    // Should be 3:30 AM (same minute, in the hour after the skipped hour)
+    expected := time.Date(2024, 3, 10, 3, 30, 0, 0, nyc)
     if !next.Equal(expected) {
         t.Errorf("expected %v, got %v", expected, next)
     }
