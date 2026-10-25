@@ -100,7 +100,10 @@ func (l RedisLocker) TryLock(ctx context.Context, key string, ttl time.Duration)
         return nil, false, err
     }
     release := func() {
-        _ = releaseScript.Run(context.Background(), l.client, []string{key}, token).Err()
+        if err := releaseScript.Run(context.Background(), l.client, []string{key}, token).Err(); err != nil {
+            // The key stays reserved until its TTL expires.
+            log.Printf("releasing %s failed: %v", key, err)
+        }
     }
     return release, true, nil
 }
@@ -148,27 +151,30 @@ import (
     cron "github.com/netresearch/go-cron"
 )
 
-// WithPgAdvisoryLock creates a wrapper using PostgreSQL advisory locks.
-// An advisory lock belongs to a database session, so the lock and the
-// unlock must run on the same connection: take one from the pool with
-// db.Conn and keep it for the whole run.
+// WithPgAdvisoryLock creates a wrapper using a PostgreSQL advisory lock.
+// pg_try_advisory_xact_lock holds the lock for the transaction, so ending
+// the transaction releases it: there is no separate unlock that can fail
+// and leave the lock on a pooled session. The transaction keeps one
+// connection for the whole run; the pool must have another one free if the
+// job uses the same *sql.DB, or use a separate *sql.DB for the locks.
 func WithPgAdvisoryLock(db *sql.DB, lockName string) cron.JobWrapper {
-    // Convert lock name to int64 for pg_advisory_lock
+    // Convert lock name to int64 for pg_try_advisory_xact_lock
     lockID := hashStringToInt64(lockName)
 
     return func(job cron.Job) cron.Job {
         return cron.FuncJob(func() {
             ctx := context.Background()
-            conn, err := db.Conn(ctx)
+            tx, err := db.BeginTx(ctx, nil)
             if err != nil {
-                log.Printf("Error getting a connection: %v", err)
+                log.Printf("Error starting the lock transaction: %v", err)
                 return
             }
-            defer conn.Close()
+            // Rollback ends the transaction and releases the lock.
+            defer tx.Rollback()
 
             // Try to acquire lock (non-blocking)
             var acquired bool
-            if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", lockID).Scan(&acquired); err != nil {
+            if err := tx.QueryRowContext(ctx, "SELECT pg_try_advisory_xact_lock($1)", lockID).Scan(&acquired); err != nil {
                 log.Printf("Error checking advisory lock: %v", err)
                 return
             }
@@ -177,13 +183,6 @@ func WithPgAdvisoryLock(db *sql.DB, lockName string) cron.JobWrapper {
                 log.Printf("Could not acquire advisory lock %s, skipping", lockName)
                 return
             }
-
-            // Release the lock on the same connection when done
-            defer func() {
-                if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", lockID); err != nil {
-                    log.Printf("Error releasing advisory lock: %v", err)
-                }
-            }()
 
             job.Run()
         })
