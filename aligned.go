@@ -63,12 +63,15 @@ func (s AlignedSchedule) Prev(t time.Time) time.Time {
 // times outside the int64 nanosecond range of UnixNano (before 1678 or after
 // 2262) still fall on the grid.
 func gridOffset(t time.Time, d time.Duration) time.Duration {
-	n := uint64(d)
-	secRem := floorMod(t.Unix(), int64(n))
-	hi, lo := bits.Mul64(uint64(secRem), uint64(time.Second)%n)
+	// The callers pass d > 0, floorMod returns a value in [0, d), Nanosecond
+	// returns a value in [0, 1e9), and rem stays below d, so no conversion
+	// below changes a value.
+	n := uint64(d)                                 // #nosec G115 -- d > 0
+	secRem := uint64(floorMod(t.Unix(), int64(d))) // #nosec G115 -- in [0, d)
+	hi, lo := bits.Mul64(secRem, uint64(time.Second)%n)
 	rem := bits.Rem64(hi, lo, n)
-	rem = (rem + uint64(t.Nanosecond())%n) % n
-	return time.Duration(rem)
+	rem = (rem + uint64(t.Nanosecond())%n) % n // #nosec G115 -- in [0, 1e9)
+	return time.Duration(rem)                  // #nosec G115 -- below d
 }
 
 // floorMod returns a mod b in [0, b) for b > 0, also for negative a.
