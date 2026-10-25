@@ -925,6 +925,10 @@ Returns `ErrEntryNotFound` if no entry has the given ID, `ctx.Err()` if `ctx` is
 done before the invocations have returned (the entry is removed either way), and
 `nil` otherwise. See [ADR-024](adr/ADR-024-remove-and-wait.md).
 
+`ErrEntryNotFound` does not mean that nothing runs. A run-once entry leaves the
+schedule when it is dispatched, and an entry removed with `Remove` is gone too,
+while an invocation of either can still be running; neither can be waited for.
+
 **Example:**
 ```go
 ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -2803,12 +2807,13 @@ type RunInfo struct {
 | `TriggerScheduled` | a fire of the schedule | the schedule's time, not the start time |
 | `TriggerManual` | `TriggerEntry`, `TriggerEntryByName` | the time of the call |
 | `TriggerCatchUp` | the entry's `MissedPolicy` | the missed scheduled time |
-| any of the four | `TriggerEntryWithInfo` | the caller's `ScheduledTime` |
+| `TriggerImmediate` | the first run of an entry added `WithRunImmediately` | the time it was started |
+| any of the five | `TriggerEntryWithInfo` | the caller's `ScheduledTime` |
 | `TriggerDependency` | a workflow parent reaching its condition | the time the child was started |
 
 A manual trigger of a workflow root carries `TriggerManual`; the children it
 starts carry `TriggerDependency`. The zero `TriggerKind` is not a valid kind;
-`TriggerKind.Valid` reports whether a value is one of the four. See
+`TriggerKind.Valid` reports whether a value is one of the five. See
 [ADR-023](adr/ADR-023-run-info-in-context.md).
 
 **Example:**

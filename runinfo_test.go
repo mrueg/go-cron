@@ -60,6 +60,27 @@ func TestRunInfo_ScheduledFire(t *testing.T) {
 	requireRunInfo(t, nextRunInfo(t, infos), TriggerScheduled, start.Add(time.Hour))
 }
 
+// The first run of an entry added WithRunImmediately is not a fire of the
+// schedule: it reports TriggerImmediate and the time it started. The next
+// fire is the schedule's again.
+func TestRunInfo_RunImmediately(t *testing.T) {
+	start := time.Date(2026, 1, 18, 10, 17, 0, 0, time.UTC)
+	clock := NewFakeClock(start)
+	c := New(WithClock(clock), WithParser(secondParser))
+	defer c.Stop()
+
+	job, infos := runInfoRecorder()
+	if _, err := c.AddJob("0 0 * * * *", job, WithRunImmediately()); err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+	c.Start()
+	requireRunInfo(t, nextRunInfo(t, infos), TriggerImmediate, start)
+
+	clock.BlockUntil(1)
+	clock.Advance(43 * time.Minute)
+	requireRunInfo(t, nextRunInfo(t, infos), TriggerScheduled, time.Date(2026, 1, 18, 11, 0, 0, 0, time.UTC))
+}
+
 func TestRunInfo_ManualTrigger(t *testing.T) {
 	now := time.Date(2026, 1, 18, 10, 30, 0, 0, time.UTC)
 	clock := NewFakeClock(now)
@@ -195,6 +216,7 @@ func TestTriggerKind_StringAndValid(t *testing.T) {
 		{TriggerManual, "Manual", true},
 		{TriggerCatchUp, "CatchUp", true},
 		{TriggerDependency, "Dependency", true},
+		{TriggerImmediate, "Immediate", true},
 		{TriggerKind(99), "Unknown", false},
 	}
 	for _, tc := range cases {

@@ -291,8 +291,10 @@ was scheduled for:
 
 ```go
 info, ok := cron.RunInfoFromContext(ctx)
-// info.Trigger: TriggerScheduled, TriggerManual, TriggerCatchUp or TriggerDependency
-// info.ScheduledTime: the schedule's time, not the start time
+// info.Trigger: TriggerScheduled, TriggerManual, TriggerCatchUp, TriggerDependency
+//               or TriggerImmediate (the first run of WithRunImmediately)
+// info.ScheduledTime: for a scheduled fire or a catch-up the schedule's time,
+//                     not the start time; otherwise the time the run started
 ```
 
 `TriggerEntryWithInfo` starts an entry with a `RunInfo` you choose, for example a

@@ -40,9 +40,14 @@ type RunInfo struct {
 func RunInfoFromContext(ctx context.Context) (RunInfo, bool)
 ```
 
-`TriggerKind` has four values, one per way the scheduler starts a job:
-`TriggerScheduled`, `TriggerManual`, `TriggerCatchUp` and `TriggerDependency`.
-The zero value is not a kind, so a `RunInfo` that was never set is
+`TriggerKind` has five values, one per way the scheduler starts a job:
+`TriggerScheduled`, `TriggerManual`, `TriggerCatchUp`, `TriggerDependency` and
+`TriggerImmediate`. The last is the first run of an entry added
+`WithRunImmediately`. It goes through the same path as a fire of the schedule,
+but its time is the time the entry was added or the scheduler started, which
+the schedule never produces; reported as `TriggerScheduled`, it would look like
+a fire at that time and move a record such as Ofelia's to it. The zero value is
+not a kind, so a `RunInfo` that was never set is
 distinguishable from a real one, and `TriggerKind.Valid` follows the
 defensive-enum pattern of `MissedPolicy`.
 

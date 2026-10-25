@@ -27,6 +27,11 @@ const (
 	// parents reached the required results. Its scheduled time is the time the
 	// child was started.
 	TriggerDependency
+
+	// TriggerImmediate is the first run of an entry added WithRunImmediately,
+	// started when the entry is added or the scheduler starts rather than at a
+	// time of its schedule. Its scheduled time is the time it was started.
+	TriggerImmediate
 )
 
 // String returns a human-readable representation of the TriggerKind.
@@ -40,6 +45,8 @@ func (k TriggerKind) String() string {
 		return "CatchUp"
 	case TriggerDependency:
 		return "Dependency"
+	case TriggerImmediate:
+		return "Immediate"
 	default:
 		return "Unknown"
 	}
@@ -47,7 +54,7 @@ func (k TriggerKind) String() string {
 
 // Valid returns true if the kind is a known value.
 func (k TriggerKind) Valid() bool {
-	return k >= TriggerScheduled && k <= TriggerDependency
+	return k >= TriggerScheduled && k <= TriggerImmediate
 }
 
 // RunInfo describes one invocation of an entry. The scheduler puts it into
@@ -55,8 +62,8 @@ func (k TriggerKind) Valid() bool {
 type RunInfo struct {
 	// ScheduledTime is the time the invocation was scheduled for. For a
 	// scheduled fire and a catch-up it is the schedule's time, not the time
-	// the job started; for a manual or dependency run it is the time the run
-	// was started.
+	// the job started; for a manual, dependency or immediate run it is the
+	// time the run was started.
 	ScheduledTime time.Time
 
 	// Trigger says what started the invocation.

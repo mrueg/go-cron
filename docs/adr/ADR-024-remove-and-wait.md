@@ -40,13 +40,20 @@ caller never sees.
 The wait happens in the caller's goroutine, outside the run loop and without
 `runningMu`. A wait inside the run loop would stall every entry for the
 duration of the job, the failure mode [ADR-022](ADR-022-drain-and-upsert.md)
-rejects for the same reason. Holding `runningMu` would deadlock against a
-run-once completion, which takes that lock to remove its entry.
+rejects for the same reason. Holding `runningMu` would block `Stop` and every
+other method that takes it for as long as the job runs, and a job that calls
+such a method would deadlock.
 
 The wait is bounded by `ctx`, because a job that ignores cancellation can run
 for as long as it likes. When `ctx` ends first, the method returns `ctx.Err()`;
-the entry is removed either way. `ErrEntryNotFound` reports an unknown entry,
-so a caller can tell "nothing to remove" from "removed and drained".
+the entry is removed either way.
+
+`ErrEntryNotFound` means that no entry with that ID or name is scheduled. It
+does not mean that nothing runs: a run-once entry leaves the schedule when it
+is dispatched, and an entry removed with `Remove` is gone as well, while an
+invocation of either can still be running. Neither can be waited for, because
+the tracker went with the entry. A caller that replaces such an entry has to
+keep track of its invocations itself.
 
 `Remove`, `RemoveByName`, `WaitForJob` and `WaitForJobByName` keep their
 behaviour.

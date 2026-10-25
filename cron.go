@@ -364,6 +364,11 @@ type Entry struct {
 	// When true, the entry will be scheduled to run immediately upon registration.
 	runImmediately bool
 
+	// immediateDue is set while Next holds the run-immediately time, so the
+	// fire at that time is reported as TriggerImmediate, not as a fire of
+	// the schedule.
+	immediateDue bool
+
 	// runOnce is an internal flag set by WithRunOnce().
 	// When true, the entry will be automatically removed after its first execution.
 	runOnce bool
@@ -1057,9 +1062,12 @@ func (c *Cron) removeTracked(id EntryID) *jobTracker {
 //
 // Returns ErrEntryNotFound if no entry has the given ID, ctx.Err() if ctx is
 // done before the invocations have returned (the entry is removed either way),
-// and nil otherwise.
+// and nil otherwise. ErrEntryNotFound does not mean that nothing runs: a
+// run-once entry leaves the schedule when it is dispatched, and an entry
+// removed with Remove is gone too, while an invocation of either can still be
+// running. Neither can be waited for.
 //
-//	if err := cr.RemoveAndWait(ctx, id); err != nil && !errors.Is(err, cron.ErrEntryNotFound) {
+//	if err := cr.RemoveAndWait(ctx, id); errors.Is(err, context.DeadlineExceeded) {
 //	    // an invocation is still running after ctx expired
 //	}
 func (c *Cron) RemoveAndWait(ctx context.Context, id EntryID) error {
@@ -1077,7 +1085,8 @@ func (c *Cron) RemoveAndWait(ctx context.Context, id EntryID) error {
 // Unlike RemoveByName followed by WaitForJobByName, it can wait: the removal
 // deletes the name, so a lookup by name afterwards no longer finds the entry.
 //
-// Returns ErrEntryNotFound if no entry has the given name.
+// Returns ErrEntryNotFound if no entry has the given name, with the same
+// caveat as RemoveAndWait.
 func (c *Cron) RemoveByNameAndWait(ctx context.Context, name string) error {
 	entry := c.EntryByName(name)
 	if !entry.Valid() {
@@ -1118,7 +1127,9 @@ func (c *Cron) scheduleEntryNext(entry *Entry, now time.Time) {
 	if entry.runImmediately {
 		entry.Next = now
 		entry.runImmediately = false // Clear flag after use
+		entry.immediateDue = true
 	} else {
+		entry.immediateDue = false
 		entry.Next = entry.Schedule.Next(now)
 	}
 }
@@ -1232,6 +1243,7 @@ func (c *Cron) processDueEntries(now time.Time) {
 
 		// Skip paused entries: reschedule without executing.
 		if e.Paused {
+			e.immediateDue = false
 			e.Next = e.Schedule.Next(now)
 			c.hooks.callOnSchedule(e.ID, e.Job, e.Next)
 			c.entries.Update(e)
@@ -1240,12 +1252,17 @@ func (c *Cron) processDueEntries(now time.Time) {
 		}
 
 		scheduledTime := e.Next
+		kind := TriggerScheduled
+		if e.immediateDue {
+			kind = TriggerImmediate
+			e.immediateDue = false
+		}
 
 		// If this entry has dependents, start a workflow execution.
 		if len(c.parentToChildren[e.ID]) > 0 {
-			c.startWorkflowExecution(e, scheduledTime, TriggerScheduled)
+			c.startWorkflowExecution(e, scheduledTime, kind)
 		} else {
-			c.startJob(e.entryCtx, e.running, e.ID, e.Job, e.WrappedJob, RunInfo{ScheduledTime: scheduledTime, Trigger: TriggerScheduled})
+			c.startJob(e.entryCtx, e.running, e.ID, e.Job, e.WrappedJob, RunInfo{ScheduledTime: scheduledTime, Trigger: kind})
 		}
 		e.Prev = e.Next
 		c.postDispatchScheduled(e, now)
