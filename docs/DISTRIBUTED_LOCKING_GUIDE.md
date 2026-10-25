@@ -148,17 +148,27 @@ import (
     cron "github.com/netresearch/go-cron"
 )
 
-// WithPgAdvisoryLock creates a wrapper using PostgreSQL advisory locks
+// WithPgAdvisoryLock creates a wrapper using PostgreSQL advisory locks.
+// An advisory lock belongs to a database session, so the lock and the
+// unlock must run on the same connection: take one from the pool with
+// db.Conn and keep it for the whole run.
 func WithPgAdvisoryLock(db *sql.DB, lockName string) cron.JobWrapper {
     // Convert lock name to int64 for pg_advisory_lock
     lockID := hashStringToInt64(lockName)
 
     return func(job cron.Job) cron.Job {
         return cron.FuncJob(func() {
+            ctx := context.Background()
+            conn, err := db.Conn(ctx)
+            if err != nil {
+                log.Printf("Error getting a connection: %v", err)
+                return
+            }
+            defer conn.Close()
+
             // Try to acquire lock (non-blocking)
             var acquired bool
-            err := db.QueryRow("SELECT pg_try_advisory_lock($1)", lockID).Scan(&acquired)
-            if err != nil {
+            if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", lockID).Scan(&acquired); err != nil {
                 log.Printf("Error checking advisory lock: %v", err)
                 return
             }
@@ -168,10 +178,9 @@ func WithPgAdvisoryLock(db *sql.DB, lockName string) cron.JobWrapper {
                 return
             }
 
-            // Ensure we release the lock when done
+            // Release the lock on the same connection when done
             defer func() {
-                _, err := db.Exec("SELECT pg_advisory_unlock($1)", lockID)
-                if err != nil {
+                if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", lockID); err != nil {
                     log.Printf("Error releasing advisory lock: %v", err)
                 }
             }()
@@ -362,6 +371,7 @@ Set lock TTL appropriately:
 | Scenario | TTL Recommendation |
 |----------|-------------------|
 | `SkipDuplicateRuns` | Longer than the largest clock difference between instances; job duration does not matter |
+| `SkipWhileLocked` | Longer than the longest run; `Locker` has no extension, so the rows below apply only to the hand-written lock wrappers |
 | Quick job (<1 min) | 2-5 minutes |
 | Medium job (1-10 min) | Job duration × 2 |
 | Long job (>10 min) | Job duration + buffer, or use lock extension |

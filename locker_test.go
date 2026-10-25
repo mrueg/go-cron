@@ -322,10 +322,33 @@ func TestSkipWhileLockedReleasesOnPanic(t *testing.T) {
 func TestSkipWhileLockedFailsClosed(t *testing.T) {
 	t.Parallel()
 	var runs atomic.Int32
+	var skipped atomic.Bool
 	log := &recordingLogger{}
-	SkipWhileLocked(failingLocker{}, "db", time.Hour, log)(FuncJob(func() { runs.Add(1) })).Run()
-	if runs.Load() != 0 || log.errs.Load() != 1 {
-		t.Errorf("locker error: runs = %d, logged errors = %d, want 0 and 1", runs.Load(), log.errs.Load())
+	ctx := context.WithValue(context.Background(), runSkippedKey{}, &skipped)
+	RunJob(ctx, SkipWhileLocked(failingLocker{}, "db", time.Hour, log)(FuncJob(func() { runs.Add(1) })))
+	if runs.Load() != 0 || log.errs.Load() != 1 || !skipped.Load() {
+		t.Errorf("locker error: runs = %d, logged errors = %d, marked skipped = %v, want 0, 1 and true",
+			runs.Load(), log.errs.Load(), skipped.Load())
+	}
+}
+
+type ctxJob struct{ got context.Context }
+
+func (j *ctxJob) Run()                               { j.RunWithContext(context.Background()) }
+func (j *ctxJob) RunWithContext(ctx context.Context) { j.got = ctx }
+
+// The inner job gets the run's context, so a context-aware job or wrapper
+// inside keeps RunInfo and the entry's cancellation.
+func TestSkipWhileLockedPassesContext(t *testing.T) {
+	t.Parallel()
+	info := RunInfo{ScheduledTime: time.Date(2026, 10, 26, 9, 0, 0, 0, time.UTC), Trigger: TriggerScheduled}
+	inner := &ctxJob{}
+	runWithInfo(SkipWhileLocked(NewMemoryLocker(nil), "db", time.Hour, DiscardLogger)(inner), info)
+	if inner.got == nil {
+		t.Fatal("inner job did not run")
+	}
+	if got, ok := RunInfoFromContext(inner.got); !ok || got != info {
+		t.Errorf("inner job's RunInfo = %+v, %v, want %+v, true", got, ok, info)
 	}
 }
 
