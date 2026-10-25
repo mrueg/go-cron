@@ -273,6 +273,37 @@ the prior paused state in one call:
 c.DrainAndUpsertJob(newSpec, newJob, cron.WithName("my-job"))
 ```
 
+To remove an entry and wait for its running invocation, use `RemoveAndWait` or
+`RemoveByNameAndWait`. The removal cancels the entry's context; the wait ends
+when the invocation returns or the context you pass is done:
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+err := c.RemoveByNameAndWait(ctx, "my-job")
+```
+
+`RemoveByName` followed by `WaitForJobByName` does not wait: the removal deletes
+the name, so the lookup finds nothing.
+
+A job that implements `JobWithContext` can read what started it and the time it
+was scheduled for:
+
+```go
+info, ok := cron.RunInfoFromContext(ctx)
+// info.Trigger: TriggerScheduled, TriggerManual, TriggerCatchUp, TriggerDependency
+//               or TriggerImmediate (the first run of WithRunImmediately)
+// info.ScheduledTime: for a scheduled fire or a catch-up the schedule's time,
+//                     not the start time; otherwise the time the run started
+```
+
+`TriggerEntryWithInfo` starts an entry with a `RunInfo` you choose, for example a
+catch-up you decided on yourself:
+
+```go
+c.TriggerEntryWithInfoByName("nightly", cron.RunInfo{ScheduledTime: missed, Trigger: cron.TriggerCatchUp})
+```
+
 ## Pause/Resume
 
 Temporarily suspend individual entries without removing them:

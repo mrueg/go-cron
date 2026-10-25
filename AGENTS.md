@@ -59,6 +59,9 @@ Cron spec parser and job scheduler for Go (successor to robfig/cron).
 | [ADR-019](docs/adr/ADR-019-atomic-entry-limit.md) | Atomic Entry Limit | CAS loop for lock-free entry count limiting |
 | [ADR-020](docs/adr/ADR-020-feature-scope-boundary.md) | Feature Scope Boundary | What belongs in go-cron vs external tools |
 | [ADR-021](docs/adr/ADR-021-quoted-timezone-values.md) | Quoted Timezone Values | `TZ="America/New_York"` and `CRON_TZ='...'` accepted |
+| [ADR-022](docs/adr/ADR-022-drain-and-upsert.md) | Drain and Upsert | `DrainAndUpsertJob` pauses, drains, swaps - no stale fire |
+| [ADR-023](docs/adr/ADR-023-run-info-in-context.md) | Run Info in Context | Scheduled time and trigger kind via `RunInfoFromContext` |
+| [ADR-024](docs/adr/ADR-024-remove-and-wait.md) | Remove and Wait | `RemoveAndWait` takes the tracker in the removal step, waits outside the run loop |
 
 When proposing changes that conflict with an ADR, you MUST:
 1. Read the full ADR including alternatives considered

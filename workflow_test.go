@@ -1743,6 +1743,33 @@ func TestRemoveEntry_CleansMultipleChildren(t *testing.T) {
 	}
 }
 
+func TestRemoveEntry_CleansChildFromParents(t *testing.T) {
+	// When a child is removed, its parents must stop listing it; otherwise a
+	// parent keeps starting workflow executions for a child that is gone.
+	c := New(WithSeconds())
+
+	parent1, _ := c.AddFunc("@triggered", func() {}, WithName("parent1"))
+	parent2, _ := c.AddFunc("@triggered", func() {}, WithName("parent2"))
+	child, _ := c.AddFunc("@triggered", func() {}, WithName("child"))
+	sibling, _ := c.AddFunc("@triggered", func() {}, WithName("sibling"))
+
+	_ = c.AddDependency(child, parent1, OnSuccess)
+	_ = c.AddDependency(child, parent2, OnSuccess)
+	_ = c.AddDependency(sibling, parent1, OnSuccess)
+
+	c.Remove(child)
+
+	if got := c.parentToChildren[parent1]; len(got) != 1 || got[0] != sibling {
+		t.Errorf("parent1 children = %v, want only the sibling %v", got, sibling)
+	}
+	if got, ok := c.parentToChildren[parent2]; ok {
+		t.Errorf("parent2 still lists children %v after its only child was removed", got)
+	}
+	if _, ok := c.entryDeps[child]; ok {
+		t.Error("the removed child still has dependency edges")
+	}
+}
+
 func TestRemoveDependency_MultiParent(t *testing.T) {
 	// Kills negated conditions at cron.go:2111,2117,2122
 	// When removing one dep, the other parent's dep should remain intact.
