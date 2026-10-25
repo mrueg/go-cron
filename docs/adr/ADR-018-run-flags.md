@@ -59,6 +59,9 @@ func (c *Cron) scheduleEntry(e *Entry, now time.Time) {
 func (c *Cron) postDispatchScheduled(e *Entry, now time.Time) {
     // The job already runs in its own goroutine.
     if e.runOnce {
+        // Keep the entry context: removeEntry would cancel it while the
+        // dispatched job still runs. Stop() cancels it through baseCtx.
+        e.cancelEntryCtx = nil
         c.removeEntry(e.ID)
         return
     }
