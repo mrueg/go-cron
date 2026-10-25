@@ -12,6 +12,30 @@ Originally based on [robfig/cron](https://github.com/robfig/cron).
 ### Planned for v2
 - Context-aware Job interface with graceful shutdown support
 
+## [0.17.0] - 2026-10-25
+
+Feature release. The additions are new API; no existing signature or behaviour
+changes, and the minimum Go version stays at 1.26.
+
+### Added
+- `RunInfoFromContext(ctx)` returns the `RunInfo` of the invocation a job runs
+  for: the time it was scheduled for and what started it. `TriggerKind` names
+  five starts: `TriggerScheduled`, `TriggerManual`, `TriggerCatchUp`,
+  `TriggerDependency` (a workflow child) and `TriggerImmediate` (the first run
+  of an entry added `WithRunImmediately`). For a scheduled fire and a catch-up
+  the time is the schedule's, not the start time ([PR#429])
+- `TriggerEntryWithInfo` and `TriggerEntryWithInfoByName` start an entry with a
+  `RunInfo` the caller chooses, for example a catch-up it decided on itself. An
+  invalid `TriggerKind` returns `ErrInvalidRunInfo` ([PR#429])
+- `RemoveAndWait` and `RemoveByNameAndWait` remove an entry and wait, bounded by
+  a context, until the invocations that were running at the removal have
+  returned. `RemoveByName` followed by `WaitForJobByName` never waited, because
+  the removal deletes the name the wait looks up ([#428], [PR#429])
+
+### Documentation
+- ADR-023 (`RunInfo` in the job context) and ADR-024 (remove and wait); the ADR
+  index lists ADR-022 ([PR#429])
+
 ## [0.16.2] - 2026-10-25
 
 Bug-fix release. The public API is unchanged and the minimum Go version stays at
@@ -705,7 +729,10 @@ This fork includes all features from robfig/cron v3 plus:
    _, err := cron.ParseStandard("*/60 * * * *") // Error: step (60) must be less than range size (60)
    ```
 
-[Unreleased]: https://github.com/netresearch/go-cron/compare/v0.16.2...HEAD
+[Unreleased]: https://github.com/netresearch/go-cron/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/netresearch/go-cron/compare/v0.16.2...v0.17.0
+[#428]: https://github.com/netresearch/go-cron/issues/428
+[PR#429]: https://github.com/netresearch/go-cron/pull/429
 [0.16.2]: https://github.com/netresearch/go-cron/compare/v0.16.1...v0.16.2
 [PR#414]: https://github.com/netresearch/go-cron/pull/414
 [PR#415]: https://github.com/netresearch/go-cron/pull/415
