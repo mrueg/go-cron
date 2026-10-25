@@ -58,7 +58,7 @@ func (h *ObservabilityHooks) callOnJobStart(entryID EntryID, job Job, scheduledT
 ### Positive
 
 - **Non-blocking**: Slow hooks never delay the scheduler or job execution
-- **Isolation**: Hook panics don't crash the scheduler (contained in their own goroutine)
+- **Isolation**: Hook panics don't crash the scheduler: each hook is wrapped with a `recover` that logs the panic (`withPanicRecovery` in `observability.go`). A bare goroutine does not contain a panic; until 2026-10-25 a panicking hook ended the process. Pinned by `TestObservabilityHooks_PanickingHookIsContained` and `TestObservabilityHooks_BlockingHookDoesNotDelayScheduler`
 - **Simple API**: Users don't need to manage channels or goroutines
 - **Zero overhead when nil**: No goroutines spawned if hooks are not configured
 

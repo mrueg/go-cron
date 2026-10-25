@@ -4,6 +4,7 @@
 package cron
 
 import (
+	"fmt"
 	"maps"
 	"time"
 )
@@ -77,6 +78,44 @@ func getJobName(j Job) string {
 		return nj.Name()
 	}
 	return ""
+}
+
+// withPanicRecovery returns a copy of h whose hooks recover from a panic and
+// log it, so a failing hook cannot crash the process (ADR-003). The hooks run
+// in their own goroutines, where an unrecovered panic would end the program.
+func (h *ObservabilityHooks) withPanicRecovery(logger Logger) *ObservabilityHooks {
+	wrapped := *h
+	h = &wrapped
+	recoverHook := func(hook string) {
+		if r := recover(); r != nil {
+			logger.Error(fmt.Errorf("panic: %v", r), "observability hook panicked", "hook", hook)
+		}
+	}
+	if f := h.OnJobStart; f != nil {
+		h.OnJobStart = func(id EntryID, name string, scheduled time.Time) {
+			defer recoverHook("OnJobStart")
+			f(id, name, scheduled)
+		}
+	}
+	if f := h.OnJobComplete; f != nil {
+		h.OnJobComplete = func(id EntryID, name string, d time.Duration, recovered any) {
+			defer recoverHook("OnJobComplete")
+			f(id, name, d, recovered)
+		}
+	}
+	if f := h.OnSchedule; f != nil {
+		h.OnSchedule = func(id EntryID, name string, next time.Time) {
+			defer recoverHook("OnSchedule")
+			f(id, name, next)
+		}
+	}
+	if f := h.OnWorkflowComplete; f != nil {
+		h.OnWorkflowComplete = func(execID string, rootID EntryID, results map[EntryID]JobResult) {
+			defer recoverHook("OnWorkflowComplete")
+			f(execID, rootID, results)
+		}
+	}
+	return h
 }
 
 // callOnJobStart safely calls the OnJobStart hook if configured.

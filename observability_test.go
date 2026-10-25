@@ -4,7 +4,9 @@
 package cron
 
 import (
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -393,5 +395,78 @@ func BenchmarkObservabilityHooks_NilOverhead(b *testing.B) {
 		h.callOnJobComplete(EntryID(i), FuncJob(func() {}), time.Second, nil)
 		h.callOnSchedule(EntryID(i), FuncJob(func() {}), time.Now())
 		i++
+	}
+}
+
+// TestObservabilityHooks_BlockingHookDoesNotDelayScheduler pins ADR-003: hooks
+// run in their own goroutines, so a hook that never returns must not delay
+// later job runs.
+func TestObservabilityHooks_BlockingHookDoesNotDelayScheduler(t *testing.T) {
+	release := make(chan struct{})
+
+	clock := NewFakeClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	c := New(WithClock(clock), WithParser(secondParser), WithObservability(ObservabilityHooks{
+		OnJobStart: func(EntryID, string, time.Time) { <-release },
+		OnSchedule: func(EntryID, string, time.Time) { <-release },
+	}))
+
+	var runs atomic.Int32
+	if _, err := c.AddFunc("* * * * * *", func() { runs.Add(1) }); err != nil {
+		t.Fatal(err)
+	}
+	c.Start()
+	defer c.Stop()
+	defer close(release) // runs before Stop, so a blocked run loop can finish
+
+	for range 3 {
+		waited := make(chan struct{})
+		go func() { clock.BlockUntil(1); close(waited) }()
+		select {
+		case <-waited:
+		case <-time.After(2 * time.Second):
+			t.Fatal("scheduler stopped waiting for its timer: a blocking hook held it")
+		}
+		clock.Advance(time.Second)
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := runs.Load(); got != 3 {
+		t.Errorf("expected 3 runs while every hook blocks, got %d", got)
+	}
+}
+
+// TestObservabilityHooks_PanickingHookIsContained pins ADR-003: a hook that
+// panics is recovered and logged, and neither the process nor the scheduler
+// stops. Without the recovery, the panic in the hook goroutine ends the test
+// binary.
+func TestObservabilityHooks_PanickingHookIsContained(t *testing.T) {
+	var buf syncWriter
+	clock := NewFakeClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	panicking := func() { panic("hook failed") }
+	c := New(WithClock(clock), WithParser(secondParser), WithLogger(newBufLogger(&buf)),
+		WithObservability(ObservabilityHooks{
+			OnJobStart:    func(EntryID, string, time.Time) { panicking() },
+			OnJobComplete: func(EntryID, string, time.Duration, any) { panicking() },
+			OnSchedule:    func(EntryID, string, time.Time) { panicking() },
+		}))
+
+	var runs atomic.Int32
+	if _, err := c.AddFunc("* * * * * *", func() { runs.Add(1) }); err != nil {
+		t.Fatal(err)
+	}
+	c.Start()
+	defer c.Stop()
+
+	for range 2 {
+		clock.BlockUntil(1)
+		clock.Advance(time.Second)
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := runs.Load(); got != 2 {
+		t.Errorf("expected 2 runs despite panicking hooks, got %d", got)
+	}
+	for _, hook := range []string{"OnJobStart", "OnJobComplete", "OnSchedule"} {
+		if !strings.Contains(buf.String(), "hook="+hook) {
+			t.Errorf("expected the %s panic to be logged, log:\n%s", hook, buf.String())
+		}
 	}
 }
