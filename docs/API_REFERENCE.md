@@ -2107,6 +2107,25 @@ func NewMemoryLocker(clock Clock) *MemoryLocker
 
 NewMemoryLocker returns a `Locker` for one process, reading the time from `clock` (the system clock if nil). Use it for several schedulers in one process and as a test double. Expired keys are removed by `TryLock`, so the never-released keys of `SkipDuplicateRuns` do not accumulate.
 
+#### type ConcurrencyGroups
+
+```go
+func NewConcurrencyGroups() *ConcurrencyGroups
+func (g *ConcurrencyGroups) MaxConcurrent(name string, n int) JobWrapper
+func (g *ConcurrencyGroups) MaxConcurrentSkip(logger Logger, name string, n int) JobWrapper
+```
+
+ConcurrencyGroups hands out `MaxConcurrent` and `MaxConcurrentSkip` wrappers that share a limit by name. Jobs that load one resource can be wrapped independently, by code that never shares a wrapper value, and still stay within the group's limit together. `MaxConcurrent` waits for a slot, `MaxConcurrentSkip` skips the run.
+
+Groups exist per `ConcurrencyGroups` value, not per process. A group keeps the limit it was created with: asking for the same name with another `n` panics, as does `n <= 0`. The limit applies within one process.
+
+**Example:**
+```go
+groups := cron.NewConcurrencyGroups()
+c.AddJob("0 * * * *", cron.NewChain(groups.MaxConcurrent("db", 1)).Then(backup))
+c.AddJob("*/15 * * * *", cron.NewChain(groups.MaxConcurrent("db", 1)).Then(reindex))
+```
+
 #### func RetryWithBackoff
 
 ```go
