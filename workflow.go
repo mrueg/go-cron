@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"sync/atomic"
 	"time"
 )
 
@@ -172,8 +173,21 @@ func WorkflowExecutionID(ctx context.Context) string {
 type jobDoneEvent struct {
 	EntryID     EntryID
 	Panicked    bool
+	Skipped     bool // a wrapper skipped the job (markRunSkipped)
 	PanicValue  any
 	ExecutionID string // workflow execution ID, empty if standalone
+}
+
+// runSkippedKey carries the flag that markRunSkipped sets for a workflow job.
+type runSkippedKey struct{}
+
+// markRunSkipped records that a wrapper skipped the job of this run, so a
+// workflow counts the run as ResultSkipped instead of ResultSuccess. Outside a
+// workflow it does nothing.
+func markRunSkipped(ctx context.Context) {
+	if f, ok := ctx.Value(runSkippedKey{}).(*atomic.Bool); ok {
+		f.Store(true)
+	}
 }
 
 // hasCycle checks whether adding an edge from newChild to newParent

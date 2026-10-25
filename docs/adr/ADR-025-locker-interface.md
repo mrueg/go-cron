@@ -52,7 +52,9 @@ func SkipDuplicateRuns(locker Locker, name string, ttl time.Duration, logger Log
    nanoseconds>`.** UTC makes instances in different zones produce one key for
    one instant. The name is a parameter, because `RunInfo` carries no entry
    name and a chain applies to every entry it wraps. The instances must share
-   the spec and the time zone, or they compute different scheduled times.
+   the spec and the time zone, or they compute different scheduled times. An
+   `@every` schedule counts from each instance's own start, so instances never
+   share its times and it cannot be deduplicated; the documentation says so.
 4. **Only `TriggerScheduled` and `TriggerCatchUp` reserve a key.** Both carry a
    time of the schedule, which every instance shares. Manual, dependency and
    immediate runs carry the time they were started, which no other instance
@@ -70,6 +72,16 @@ func SkipDuplicateRuns(locker Locker, name string, ttl time.Duration, logger Log
    persisted run state and lease renewal.
 7. **The TTL must exceed the largest clock difference between instances.**
    A longer TTL only keeps the key in the store longer.
+8. **A skipped run is a skipped workflow result.** A job that returns without
+   panicking counts as `ResultSuccess` in a workflow, so the dependents of a
+   parent that this instance skipped would start here as well, and every
+   instance would run them. The wrapper marks the run as skipped through the
+   run context (`markRunSkipped`), and the workflow records `ResultSkipped`:
+   dependents run only where the parent ran.
+9. **`MemoryLocker` removes expired keys.** Deduplication never releases a
+   key, so without removal the store would keep one key per scheduled time.
+   `TryLock` removes the expired keys whenever the store has doubled since the
+   last removal, which keeps the cost per call constant on average.
 
 ## Consequences
 

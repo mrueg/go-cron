@@ -29,14 +29,19 @@ type Locker interface {
 	TryLock(ctx context.Context, key string, ttl time.Duration) (release func(), ok bool, err error)
 }
 
-// MemoryLocker is a Locker for one process. Expired keys are removed when
-// TryLock next sees them.
+// MemoryLocker is a Locker for one process. Expired keys are removed by
+// TryLock, so a store that SkipDuplicateRuns fills with one never-released key
+// per scheduled time stays bounded by the keys that have not yet expired.
 type MemoryLocker struct {
-	clock Clock
-	mu    sync.Mutex
-	held  map[string]memoryLock
-	seq   uint64
+	clock     Clock
+	mu        sync.Mutex
+	held      map[string]memoryLock
+	seq       uint64
+	nextSweep int // len(held) at which TryLock next removes expired keys
 }
+
+// minSweep is the smallest store size at which TryLock removes expired keys.
+const minSweep = 64
 
 type memoryLock struct {
 	until time.Time
@@ -49,7 +54,7 @@ func NewMemoryLocker(clock Clock) *MemoryLocker {
 	if clock == nil {
 		clock = RealClock{}
 	}
-	return &MemoryLocker{clock: clock, held: make(map[string]memoryLock)}
+	return &MemoryLocker{clock: clock, held: make(map[string]memoryLock), nextSweep: minSweep}
 }
 
 // TryLock implements Locker. It never returns an error.
@@ -59,6 +64,9 @@ func (m *MemoryLocker) TryLock(_ context.Context, key string, ttl time.Duration)
 	now := m.clock.Now()
 	if l, ok := m.held[key]; ok && now.Before(l.until) {
 		return nil, false, nil
+	}
+	if len(m.held) >= m.nextSweep {
+		m.sweep(now)
 	}
 	m.seq++
 	token := m.seq
@@ -71,6 +79,17 @@ func (m *MemoryLocker) TryLock(_ context.Context, key string, ttl time.Duration)
 		}
 	}
 	return release, true, nil
+}
+
+// sweep removes the expired keys. The next sweep waits until the store has
+// doubled, so the cost per TryLock stays constant on average.
+func (m *MemoryLocker) sweep(now time.Time) {
+	for k, l := range m.held {
+		if !now.Before(l.until) {
+			delete(m.held, k)
+		}
+	}
+	m.nextSweep = max(minSweep, 2*len(m.held))
 }
 
 // dedupJob implements Job and JobWithContext for SkipDuplicateRuns.
@@ -94,6 +113,7 @@ func (d *dedupJob) RunWithContext(ctx context.Context) {
 	if !ok {
 		d.logger.Error(errNoRunInfo, "skip", "job", d.name,
 			"hint", "place SkipDuplicateRuns before wrappers that drop the context, such as RetryWithBackoff")
+		markRunSkipped(ctx)
 		return
 	}
 	if info.Trigger != TriggerScheduled && info.Trigger != TriggerCatchUp {
@@ -104,10 +124,12 @@ func (d *dedupJob) RunWithContext(ctx context.Context) {
 	_, claimed, err := d.locker.TryLock(ctx, key, d.ttl)
 	if err != nil {
 		d.logger.Error(err, "skip", "job", d.name, "key", key, "reason", "locker failed")
+		markRunSkipped(ctx)
 		return
 	}
 	if !claimed {
 		d.logger.Info("skip", "job", d.name, "key", key, "reason", "run already claimed")
+		markRunSkipped(ctx)
 		return
 	}
 	RunJob(ctx, d.inner)
@@ -133,7 +155,12 @@ func dedupKey(name string, scheduled time.Time) string {
 // be longer than the largest clock difference between the instances; a
 // longer ttl only keeps the key in the store longer. All instances must
 // compute the same scheduled times, so they need the same spec and the same
-// time zone (CRON_TZ= in the spec, or the same WithLocation).
+// time zone (CRON_TZ= in the spec, or the same WithLocation). An @every
+// schedule counts from each instance's own start, so instances never share
+// its times and every instance runs; use a cron expression instead.
+//
+// A skipped run counts as ResultSkipped in a workflow, so dependents of a
+// workflow parent run only on the instance that ran the parent.
 //
 // The run is skipped, and an error logged, when the locker returns an error
 // and when the context carries no RunInfo. The latter happens when a wrapper

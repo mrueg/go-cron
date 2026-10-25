@@ -198,6 +198,60 @@ func TestSkipDuplicateRunsWithScheduler(t *testing.T) {
 	}
 }
 
+// SkipDuplicateRuns never releases its keys, so every scheduled time leaves
+// one behind. TryLock must remove the expired ones, or a long-running process
+// keeps one key per run forever.
+func TestMemoryLockerRemovesExpiredKeys(t *testing.T) {
+	t.Parallel()
+	clock := NewFakeClock(time.Date(2026, 10, 26, 9, 0, 0, 0, time.UTC))
+	m := NewMemoryLocker(clock)
+	for i := range 1000 {
+		if _, ok, _ := m.TryLock(context.Background(), dedupKey("job", clock.Now()), time.Minute); !ok {
+			t.Fatalf("TryLock %d failed", i)
+		}
+		clock.Advance(time.Minute)
+	}
+	m.mu.Lock()
+	n := len(m.held)
+	m.mu.Unlock()
+	if n > minSweep {
+		t.Errorf("keys held after 1000 expired reservations = %d, want at most %d", n, minSweep)
+	}
+}
+
+// A workflow parent that another instance already ran counts as skipped, so
+// its dependents run only on the instance that ran the parent.
+func TestSkipDuplicateRunsWorkflowChildRunsOnce(t *testing.T) {
+	clock := NewFakeClock(time.Date(2026, 10, 26, 8, 59, 30, 0, time.UTC))
+	locker := NewMemoryLocker(clock)
+	var parents, children atomic.Int32
+
+	for range 2 {
+		c := New(WithClock(clock), WithLocation(time.UTC))
+		c.Start()
+		defer c.Stop()
+		parent, err := c.AddJob("0 9 * * *", NewChain(SkipDuplicateRuns(locker, "parent", time.Hour, DiscardLogger)).
+			Then(FuncJob(func() { parents.Add(1) })))
+		if err != nil {
+			t.Fatal(err)
+		}
+		child, err := c.AddFunc("@triggered", func() { children.Add(1) })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := c.AddDependency(child, parent, OnSuccess); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clock.BlockUntil(2)
+	clock.Advance(30 * time.Second)
+	waitUntil(t, "the parent and its child", func() bool { return parents.Load() >= 1 && children.Load() >= 1 })
+	time.Sleep(50 * time.Millisecond)
+	if p, ch := parents.Load(), children.Load(); p != 1 || ch != 1 {
+		t.Errorf("parent runs = %d, child runs = %d across two instances, want 1 and 1", p, ch)
+	}
+}
+
 func TestSkipDuplicateRunsPanicsOnBadArguments(t *testing.T) {
 	t.Parallel()
 	for name, f := range map[string]func(){
