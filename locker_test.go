@@ -332,23 +332,32 @@ func TestSkipWhileLockedFailsClosed(t *testing.T) {
 	}
 }
 
-type ctxJob struct{ got context.Context }
+// infoJob records the RunInfo of the context it runs with.
+type infoJob struct {
+	ran  bool
+	info RunInfo
+	ok   bool
+}
 
-func (j *ctxJob) Run()                               { j.RunWithContext(context.Background()) }
-func (j *ctxJob) RunWithContext(ctx context.Context) { j.got = ctx }
+func (j *infoJob) Run() { j.RunWithContext(context.Background()) }
+
+func (j *infoJob) RunWithContext(ctx context.Context) {
+	j.ran = true
+	j.info, j.ok = RunInfoFromContext(ctx)
+}
 
 // The inner job gets the run's context, so a context-aware job or wrapper
 // inside keeps RunInfo and the entry's cancellation.
 func TestSkipWhileLockedPassesContext(t *testing.T) {
 	t.Parallel()
 	info := RunInfo{ScheduledTime: time.Date(2026, 10, 26, 9, 0, 0, 0, time.UTC), Trigger: TriggerScheduled}
-	inner := &ctxJob{}
+	inner := &infoJob{}
 	runWithInfo(SkipWhileLocked(NewMemoryLocker(nil), "db", time.Hour, DiscardLogger)(inner), info)
-	if inner.got == nil {
+	if !inner.ran {
 		t.Fatal("inner job did not run")
 	}
-	if got, ok := RunInfoFromContext(inner.got); !ok || got != info {
-		t.Errorf("inner job's RunInfo = %+v, %v, want %+v, true", got, ok, info)
+	if !inner.ok || inner.info != info {
+		t.Errorf("inner job's RunInfo = %+v, %v, want %+v, true", inner.info, inner.ok, info)
 	}
 }
 
