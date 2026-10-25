@@ -5508,6 +5508,30 @@ func TestDSTFallBack_ConstantDelay(t *testing.T) {
 	}
 }
 
+// TestDSTFallBack_EveryHourKeepsRegularRun verifies that an interval is not
+// subject to the fall-back guard. One hour after 01:30 EDT is 01:30 EST: the
+// same wall-clock time, but a regular run of @every 1h.
+func TestDSTFallBack_EveryHourKeepsRegularRun(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skip("America/New_York timezone not available")
+	}
+	// 00:30 EDT; @every 1h fires at 01:30 EDT, 01:30 EST and 02:30 EST.
+	clock := NewFakeClock(time.Date(2026, 11, 1, 0, 30, 0, 0, loc).UTC())
+	c := New(WithClock(clock), WithLocation(loc))
+	var runs atomic.Int32
+	if _, err := c.AddFunc("@every 1h", func() { runs.Add(1) }); err != nil {
+		t.Fatal(err)
+	}
+	c.Start()
+	defer c.Stop()
+	for i := range 3 {
+		clock.BlockUntil(1)
+		clock.Advance(time.Hour)
+		waitUntil(t, "the next hourly run", func() bool { return runs.Load() == int32(i+1) })
+	}
+}
+
 // TestDSTFallBack_PerScheduleTZ verifies that the DST fall-back guard uses the
 // schedule's TZ= location rather than the cron instance's default location.
 func TestDSTFallBack_PerScheduleTZ(t *testing.T) {

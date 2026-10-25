@@ -240,8 +240,9 @@ type Schedule interface {
 // to support backward time traversal. This is useful for detecting missed
 // executions or determining the last scheduled run time.
 //
-// Built-in schedules (SpecSchedule, ConstantDelaySchedule) implement this
-// interface. Custom Schedule implementations may optionally implement it.
+// Built-in schedules (SpecSchedule, ConstantDelaySchedule, AlignedSchedule,
+// UnionSchedule, TriggeredSchedule) implement this interface. Custom
+// Schedule implementations may optionally implement it.
 //
 // Use type assertion to check for support:
 //
@@ -1151,9 +1152,17 @@ func (c *Cron) scheduleLocation(sched Schedule) *time.Location {
 // repeats there. A member in another zone, or without one, keeps its own
 // guard, and a member whose regular time coincides with another member's
 // repeat still runs.
+//
+// An interval (@every) is exempt: one interval after 01:30 EDT is 01:30 EST,
+// a regular run that only shows the same wall-clock time.
 func (c *Cron) isFallBackRepeat(sched Schedule, prev, next time.Time) bool {
-	u, ok := sched.(*UnionSchedule)
-	if !ok {
+	var u *UnionSchedule
+	switch s := sched.(type) {
+	case ConstantDelaySchedule, *ConstantDelaySchedule, AlignedSchedule, *AlignedSchedule:
+		return false
+	case *UnionSchedule:
+		u = s
+	default:
 		return isDSTFallBackDuplicate(prev, next, c.scheduleLocation(sched))
 	}
 	repeat := false

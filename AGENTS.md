@@ -63,6 +63,7 @@ Cron spec parser and job scheduler for Go (successor to robfig/cron).
 | [ADR-023](docs/adr/ADR-023-run-info-in-context.md) | Run Info in Context | Scheduled time and trigger kind via `RunInfoFromContext` |
 | [ADR-024](docs/adr/ADR-024-remove-and-wait.md) | Remove and Wait | `RemoveAndWait` takes the tracker in the removal step, waits outside the run loop |
 | [ADR-025](docs/adr/ADR-025-locker-interface.md) | Locker Interface | `Locker`, `SkipDuplicateRuns`, `SkipWhileLocked` in the library, stores stay out; dedup key = name + scheduled time in UTC, fail closed |
+| [ADR-026](docs/adr/ADR-026-aligned-intervals.md) | Aligned Intervals | `@every_aligned` fires on the epoch grid, `@every_start` from start; `AlignEvery` sets plain `@every`; intervals skip the DST fall-back guard |
 
 When proposing changes that conflict with an ADR, you MUST:
 1. Read the full ADR including alternatives considered
@@ -142,6 +143,7 @@ import (
 | `heap.go` | Min-heap implementation for entry scheduling |
 | `missed.go` | `WithMissedPolicy` for catch-up of missed jobs |
 | `constantdelay.go` | `ConstantDelaySchedule` for `@every` intervals |
+| `aligned.go` | `AlignedSchedule` for `@every_aligned` (and `@every` with `AlignEvery`) |
 | `workflow.go` | DAG execution engine with cascade skip logic (#312) |
 | `triggered.go` | `TriggeredSchedule` for `@triggered`/`@manual`/`@none` on-demand jobs |
 | `doc.go` | Package documentation and cron expression syntax |
@@ -198,7 +200,7 @@ than chasing it.
 | `docs/OPERATIONS.md` | Production deployment, shutdown, monitoring |
 | `docs/TROUBLESHOOTING.md` | Common issues and debugging techniques |
 | `docs/PROJECT_INDEX.md` | Complete project file index |
-| `docs/adr/` | Architecture Decision Records (26 ADRs) |
+| `docs/adr/` | Architecture Decision Records (27 ADRs) |
 
 ## Releasing
 

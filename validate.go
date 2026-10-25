@@ -254,7 +254,7 @@ func (r *SpecAnalysis) analyzeSpec(spec string) {
 	// Check for descriptors
 	if strings.HasPrefix(remaining, "@") {
 		r.IsDescriptor = true
-		r.analyzeDescriptor(remaining)
+		r.analyzeDescriptor()
 		return
 	}
 
@@ -262,13 +262,15 @@ func (r *SpecAnalysis) analyzeSpec(spec string) {
 	r.parseFields(remaining)
 }
 
-// analyzeDescriptor extracts information from descriptor-style specs.
-func (r *SpecAnalysis) analyzeDescriptor(descriptor string) {
-	if strings.HasPrefix(descriptor, descriptorEvery) {
-		durationStr := descriptor[len(descriptorEvery):]
-		if duration, err := time.ParseDuration(durationStr); err == nil {
-			r.Interval = duration
-		}
+// analyzeDescriptor extracts information from descriptor-style specs. The
+// interval comes from the parsed schedule, so it is the rounded value the
+// scheduler uses (90.4s reports as 1m30s).
+func (r *SpecAnalysis) analyzeDescriptor() {
+	switch s := r.Schedule.(type) {
+	case AlignedSchedule:
+		r.Interval = s.Interval
+	case ConstantDelaySchedule:
+		r.Interval = s.Delay
 	}
 }
 

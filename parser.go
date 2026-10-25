@@ -39,6 +39,7 @@ const (
 	DomL                                   // Allow L syntax in DOM (e.g., L for last day, L-3 for 3rd last day)
 	DomW                                   // Allow W syntax in DOM (e.g., 15W for nearest weekday, LW for last weekday)
 	DowOrDom                               // Use legacy OR logic for DOW/DOM (default: AND)
+	AlignEvery                             // Plain @every fires on the epoch grid, like @every_aligned (default: counts from start)
 )
 
 // Extended is a convenience flag that enables all extended cron syntax options:
@@ -430,7 +431,7 @@ func (p Parser) parse(spec string) (Schedule, error) {
 		if p.options&Descriptor == 0 {
 			return nil, fmt.Errorf("parser does not accept descriptors: %q", spec)
 		}
-		return parseDescriptor(spec, loc, p.minEveryInterval, p.maxSearchYears)
+		return parseDescriptor(spec, loc, p.minEveryInterval, p.maxSearchYears, p.options&AlignEvery != 0)
 	}
 
 	// Split on whitespace.
@@ -784,7 +785,8 @@ var fullParser = NewParser(
 //   - Standard 5-field cron: minute, hour, day-of-month, month, day-of-week
 //   - Optional seconds prefix (6 fields): second, minute, hour, dom, month, dow
 //   - Optional year suffix (7 fields with seconds, 6 without)
-//   - Descriptors: @yearly, @monthly, @weekly, @daily, @hourly, @every <duration>
+//   - Descriptors: @yearly, @monthly, @weekly, @daily, @hourly, @every <duration>,
+//     @every_aligned <duration>, @every_start <duration>, @triggered
 //   - Hash expressions: H for load-distributed scheduling
 //   - Extended syntax: FRI#3 (3rd Friday), MON#L (last Monday), L (last day), 15W (nearest weekday)
 //
@@ -1488,23 +1490,28 @@ func newDescriptorSchedule(hour, dom, month, dow uint64, loc *time.Location, max
 }
 
 // Cron descriptor keywords accepted by parseDescriptor. The calendar and
-// trigger keywords are matched exactly; descriptorEvery is matched as a
-// prefix for "@every <duration>" expressions.
+// trigger keywords are matched exactly; the three interval keywords are
+// matched as prefixes of "<keyword> <duration>" expressions.
 const (
-	descriptorYearly    = "@yearly"
-	descriptorAnnually  = "@annually"
-	descriptorMonthly   = "@monthly"
-	descriptorWeekly    = "@weekly"
-	descriptorDaily     = "@daily"
-	descriptorMidnight  = "@midnight"
-	descriptorHourly    = "@hourly"
-	descriptorEvery     = "@every "
-	descriptorTriggered = "@triggered"
-	descriptorManual    = "@manual"
-	descriptorNone      = "@none"
+	descriptorYearly   = "@yearly"
+	descriptorAnnually = "@annually"
+	descriptorMonthly  = "@monthly"
+	descriptorWeekly   = "@weekly"
+	descriptorDaily    = "@daily"
+	descriptorMidnight = "@midnight"
+	descriptorHourly   = "@hourly"
+	descriptorEvery    = "@every "
+	// descriptorEveryAligned fires on the epoch grid (AlignedSchedule) and
+	// descriptorEveryStart counts from the start (ConstantDelaySchedule),
+	// whatever the parser's AlignEvery option says about plain @every.
+	descriptorEveryAligned = "@every_aligned "
+	descriptorEveryStart   = "@every_start "
+	descriptorTriggered    = "@triggered"
+	descriptorManual       = "@manual"
+	descriptorNone         = "@none"
 )
 
-func parseDescriptor(descriptor string, loc *time.Location, minEveryInterval time.Duration, maxSearchYears int) (Schedule, error) {
+func parseDescriptor(descriptor string, loc *time.Location, minEveryInterval time.Duration, maxSearchYears int, alignEvery bool) (Schedule, error) {
 	// Normalize DOW bits so that both Sunday=0 and Sunday=7 are handled consistently
 	allDow := NormalizeDOW(all(dow))
 	switch descriptor {
@@ -1522,13 +1529,19 @@ func parseDescriptor(descriptor string, loc *time.Location, minEveryInterval tim
 		return TriggeredSchedule{}, nil
 	}
 
-	if strings.HasPrefix(descriptor, descriptorEvery) {
-		duration, err := time.ParseDuration(descriptor[len(descriptorEvery):])
+	for _, kw := range []string{descriptorEveryAligned, descriptorEveryStart, descriptorEvery} {
+		if !strings.HasPrefix(descriptor, kw) {
+			continue
+		}
+		duration, err := time.ParseDuration(descriptor[len(kw):])
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse duration %q: %w", descriptor, err)
 		}
 		if minEveryInterval > 0 && duration < minEveryInterval {
-			return nil, fmt.Errorf("@every duration must be at least %v: %q", minEveryInterval, descriptor)
+			return nil, fmt.Errorf("%s duration must be at least %v: %q", strings.TrimSpace(kw), minEveryInterval, descriptor)
+		}
+		if kw == descriptorEveryAligned || kw == descriptorEvery && alignEvery {
+			return EveryAlignedWithMin(duration, minEveryInterval), nil
 		}
 		return EveryWithMin(duration, minEveryInterval), nil
 	}
