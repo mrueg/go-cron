@@ -7,6 +7,7 @@ import (
 	"container/heap"
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
 	"sort"
@@ -46,6 +47,10 @@ var ErrNotRunning = errors.New("cron: scheduler is not running")
 // ErrCycleDetected is returned by AddDependency when the new edge would create a cycle.
 var ErrCycleDetected = errors.New("cron: dependency would create a cycle")
 
+// ErrInvalidRunInfo is returned by TriggerEntryWithInfo and
+// TriggerEntryWithInfoByName when the RunInfo carries no valid TriggerKind.
+var ErrInvalidRunInfo = errors.New("cron: invalid run info")
+
 // ErrInvalidCondition is returned by AddDependency when the trigger condition is not valid.
 var ErrInvalidCondition = errors.New("cron: invalid trigger condition")
 
@@ -72,7 +77,7 @@ type Cron struct {
 	remove      chan request[EntryID, *jobTracker]
 	update      chan request[updateScheduleRequest, error]
 	pause       chan request[pauseRequest, error]
-	trigger     chan request[EntryID, error]
+	trigger     chan request[triggerRequest, error]
 	snapshot    chan chan []Entry
 	entryLookup chan entryLookupRequest // O(1) single-entry lookup when running
 	nameLookup  chan nameLookupRequest  // O(1) entry lookup by name when running
@@ -520,7 +525,7 @@ func New(opts ...Option) *Cron {
 		remove:               make(chan request[EntryID, *jobTracker]),
 		update:               make(chan request[updateScheduleRequest, error]),
 		pause:                make(chan request[pauseRequest, error]),
-		trigger:              make(chan request[EntryID, error]),
+		trigger:              make(chan request[triggerRequest, error]),
 		running:              false,
 		runningMu:            sync.Mutex{},
 		logger:               DefaultLogger,
@@ -1875,8 +1880,8 @@ func (c *Cron) setPausedState(id EntryID, pause bool) error {
 
 // triggerEntry immediately executes the entry with the given ID.
 // Must be called only from the run loop.
-func (c *Cron) triggerEntry(id EntryID) error {
-	entry, found := c.entryIndex[id]
+func (c *Cron) triggerEntry(req triggerRequest) error {
+	entry, found := c.entryIndex[req.id]
 	if !found {
 		return ErrEntryNotFound
 	}
@@ -1885,12 +1890,16 @@ func (c *Cron) triggerEntry(id EntryID) error {
 	}
 
 	now := c.now()
+	info := RunInfo{ScheduledTime: now, Trigger: TriggerManual}
+	if req.info != nil {
+		info = *req.info
+	}
 
 	// If this entry has dependents, start a workflow execution.
 	if len(c.parentToChildren[entry.ID]) > 0 {
-		c.startWorkflowExecution(entry, now, TriggerManual)
+		c.startWorkflowExecution(entry, info.ScheduledTime, info.Trigger)
 	} else {
-		c.startJob(entry.entryCtx, entry.running, entry.ID, entry.Job, entry.WrappedJob, RunInfo{ScheduledTime: now, Trigger: TriggerManual})
+		c.startJob(entry.entryCtx, entry.running, entry.ID, entry.Job, entry.WrappedJob, info)
 	}
 	entry.Prev = now
 	c.postDispatchTriggered(entry, now)
@@ -1912,12 +1921,42 @@ func (c *Cron) triggerEntry(id EntryID) error {
 //	c.Start()
 //	c.TriggerEntry(id) // Run on demand
 func (c *Cron) TriggerEntry(id EntryID) error {
+	return c.sendTrigger(triggerRequest{id: id})
+}
+
+// TriggerEntryWithInfo immediately executes the entry with the given ID, like
+// TriggerEntry, but the invocation carries the given RunInfo instead of
+// TriggerManual and the current time: RunInfoFromContext and the OnJobStart
+// hook report info.ScheduledTime and info.Trigger.
+//
+// It lets a caller that keeps its own schedule state start a run for a time
+// it decided on, such as a catch-up for a fire missed while the process was
+// down, and recognize that run when it arrives. A zero ScheduledTime means the
+// current time.
+//
+// Returns ErrInvalidRunInfo if info.Trigger is not a valid TriggerKind, and
+// otherwise the errors of TriggerEntry.
+//
+//	missed := time.Date(2026, 10, 25, 2, 0, 0, 0, time.UTC)
+//	err := c.TriggerEntryWithInfo(id, cron.RunInfo{ScheduledTime: missed, Trigger: cron.TriggerCatchUp})
+func (c *Cron) TriggerEntryWithInfo(id EntryID, info RunInfo) error {
+	if !info.Trigger.Valid() {
+		return fmt.Errorf("%w: trigger kind %v", ErrInvalidRunInfo, info.Trigger)
+	}
+	if info.ScheduledTime.IsZero() {
+		info.ScheduledTime = c.now()
+	}
+	return c.sendTrigger(triggerRequest{id: id, info: &info})
+}
+
+// sendTrigger hands a trigger request to the run loop.
+func (c *Cron) sendTrigger(tr triggerRequest) error {
 	c.runningMu.Lock()
 	defer c.runningMu.Unlock()
 	if !c.running {
 		return ErrNotRunning
 	}
-	req := makeReq[EntryID, error](id)
+	req := makeReq[triggerRequest, error](tr)
 	c.trigger <- req
 	return <-req.reply
 }
@@ -1940,6 +1979,16 @@ func (c *Cron) TriggerEntryByName(name string) error {
 		return ErrEntryNotFound
 	}
 	return c.TriggerEntry(e.ID)
+}
+
+// TriggerEntryWithInfoByName is the named variant of TriggerEntryWithInfo.
+// Returns ErrEntryNotFound if no entry with the given name exists.
+func (c *Cron) TriggerEntryWithInfoByName(name string, info RunInfo) error {
+	e := c.EntryByName(name)
+	if !e.Valid() {
+		return ErrEntryNotFound
+	}
+	return c.TriggerEntryWithInfo(e.ID, info)
 }
 
 // extractName applies JobOptions to a temporary Entry and returns the Name.

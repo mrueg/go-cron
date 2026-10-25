@@ -745,6 +745,31 @@ c.Start()
 c.TriggerEntryByName("deploy")
 ```
 
+#### func (*Cron) TriggerEntryWithInfo
+
+```go
+func (c *Cron) TriggerEntryWithInfo(id EntryID, info RunInfo) error
+func (c *Cron) TriggerEntryWithInfoByName(name string, info RunInfo) error
+```
+
+TriggerEntryWithInfo immediately executes the entry, like `TriggerEntry`, but
+the invocation carries the given `RunInfo` instead of `TriggerManual` and the
+current time: `RunInfoFromContext` and the `OnJobStart` hook report
+`info.ScheduledTime` and `info.Trigger`. A caller that keeps its own schedule
+state uses it to start a run for a time it decided on, such as a catch-up for a
+fire missed while the process was down, and to recognize that run when it
+arrives. A zero `ScheduledTime` means the current time.
+
+Returns `ErrInvalidRunInfo` if `info.Trigger` is not a valid `TriggerKind`, and
+otherwise the errors of `TriggerEntry` / `TriggerEntryByName`.
+
+**Example:**
+```go
+missed := time.Date(2026, 10, 25, 2, 0, 0, 0, time.UTC)
+err := c.TriggerEntryWithInfoByName("nightly",
+    cron.RunInfo{ScheduledTime: missed, Trigger: cron.TriggerCatchUp})
+```
+
 #### func (*Cron) ScheduleJob
 
 ```go
@@ -2778,6 +2803,7 @@ type RunInfo struct {
 | `TriggerScheduled` | a fire of the schedule | the schedule's time, not the start time |
 | `TriggerManual` | `TriggerEntry`, `TriggerEntryByName` | the time of the call |
 | `TriggerCatchUp` | the entry's `MissedPolicy` | the missed scheduled time |
+| any of the four | `TriggerEntryWithInfo` | the caller's `ScheduledTime` |
 | `TriggerDependency` | a workflow parent reaching its condition | the time the child was started |
 
 A manual trigger of a workflow root carries `TriggerManual`; the children it
@@ -2984,6 +3010,15 @@ var ErrInvalidCondition = errors.New("cron: invalid trigger condition")
 
 Returned by `AddDependency` and `AddDependencyByName` when the provided
 `TriggerCondition` is not a valid known value.
+
+### ErrInvalidRunInfo
+
+```go
+var ErrInvalidRunInfo = errors.New("cron: invalid run info")
+```
+
+Returned by `TriggerEntryWithInfo` and `TriggerEntryWithInfoByName` when the
+`RunInfo` carries no valid `TriggerKind`.
 
 ### ErrMultipleFinalSteps
 

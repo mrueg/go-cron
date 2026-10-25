@@ -65,6 +65,13 @@ type RunInfo struct {
 
 type runInfoContextKey struct{}
 
+// triggerRequest asks the run loop to start an entry now. info is nil for a
+// plain manual trigger, which runs with TriggerManual and the current time.
+type triggerRequest struct {
+	id   EntryID
+	info *RunInfo
+}
+
 // RunInfoFromContext returns the RunInfo of the invocation that ctx belongs
 // to. ok is false if ctx was not created by the scheduler for a job run.
 //

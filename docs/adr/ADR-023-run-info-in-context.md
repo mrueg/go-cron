@@ -52,6 +52,14 @@ takes the kind as a parameter instead of deriving it, because it is reached
 from both the schedule fire and the manual trigger. The workflow execution ID
 is layered on top of the same context, so a workflow job carries both.
 
+A caller can also start an invocation with a `RunInfo` of its own:
+`TriggerEntryWithInfo(id, info)` and `TriggerEntryWithInfoByName`. A caller that
+keeps its own schedule state decides on its catch-ups itself, and needs the run
+it starts to arrive as what it is, with the scheduled time it was started for.
+Started through `TriggerEntry`, it would arrive as a manual run at the current
+time, and the caller would have to keep side state to recognize it. The kind
+must be valid (`ErrInvalidRunInfo` otherwise); a zero time means now.
+
 The value travels in the context, not in a new interface method: the `Job` and
 `JobWithContext` signatures stay unchanged
 ([ADR-005](ADR-005-decorator-pattern.md), [ADR-017](ADR-017-job-with-context.md)),

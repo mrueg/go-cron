@@ -5,6 +5,7 @@ package cron
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -203,5 +204,113 @@ func TestTriggerKind_StringAndValid(t *testing.T) {
 		if got := tc.kind.Valid(); got != tc.valid {
 			t.Errorf("TriggerKind(%d).Valid() = %v, want %v", int(tc.kind), got, tc.valid)
 		}
+	}
+}
+
+// A caller-supplied RunInfo reaches the job and the OnJobStart hook in place
+// of TriggerManual and the current time.
+func TestTriggerEntryWithInfo_CarriesTheGivenRunInfo(t *testing.T) {
+	now := time.Date(2026, 1, 18, 10, 30, 0, 0, time.UTC)
+	missed := time.Date(2026, 1, 18, 2, 0, 0, 0, time.UTC)
+	clock := NewFakeClock(now)
+	hookTimes := make(chan time.Time, 1)
+	c := New(WithClock(clock), WithParser(secondParser), WithObservability(ObservabilityHooks{
+		OnJobStart: func(_ EntryID, _ string, scheduled time.Time) { hookTimes <- scheduled },
+	}))
+	defer c.Stop()
+
+	job, infos := runInfoRecorder()
+	if _, err := c.AddJob("0 0 2 * * *", job, WithName("nightly")); err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+	c.Start()
+	if err := c.TriggerEntryWithInfoByName("nightly", RunInfo{ScheduledTime: missed, Trigger: TriggerCatchUp}); err != nil {
+		t.Fatalf("TriggerEntryWithInfoByName: %v", err)
+	}
+
+	requireRunInfo(t, nextRunInfo(t, infos), TriggerCatchUp, missed)
+	select {
+	case got := <-hookTimes:
+		if !got.Equal(missed) {
+			t.Errorf("OnJobStart scheduled time = %v, want %v", got, missed)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnJobStart did not fire")
+	}
+}
+
+func TestTriggerEntryWithInfo_WorkflowRoot(t *testing.T) {
+	now := time.Date(2026, 1, 18, 10, 30, 0, 0, time.UTC)
+	missed := time.Date(2026, 1, 18, 2, 0, 0, 0, time.UTC)
+	c := New(WithClock(NewFakeClock(now)), WithParser(secondParser))
+	defer c.Stop()
+
+	rootJob, rootInfos := runInfoRecorder()
+	childJob, childInfos := runInfoRecorder()
+	root, _ := c.AddJob("0 0 2 * * *", rootJob, WithName("root"))
+	if _, err := c.AddJob("@triggered", childJob, WithName("child")); err != nil {
+		t.Fatalf("AddJob child: %v", err)
+	}
+	if err := c.AddDependencyByName("child", "root", OnSuccess); err != nil {
+		t.Fatalf("AddDependencyByName: %v", err)
+	}
+	c.Start()
+	if err := c.TriggerEntryWithInfo(root, RunInfo{ScheduledTime: missed, Trigger: TriggerCatchUp}); err != nil {
+		t.Fatalf("TriggerEntryWithInfo: %v", err)
+	}
+
+	requireRunInfo(t, nextRunInfo(t, rootInfos), TriggerCatchUp, missed)
+	if got := nextRunInfo(t, childInfos); got.Trigger != TriggerDependency {
+		t.Errorf("child Trigger = %v, want %v", got.Trigger, TriggerDependency)
+	}
+}
+
+func TestTriggerEntryWithInfo_ZeroTimeMeansNow(t *testing.T) {
+	now := time.Date(2026, 1, 18, 10, 30, 0, 0, time.UTC)
+	c := New(WithClock(NewFakeClock(now)), WithParser(secondParser))
+	defer c.Stop()
+
+	job, infos := runInfoRecorder()
+	id, _ := c.AddJob("@triggered", job)
+	c.Start()
+	if err := c.TriggerEntryWithInfo(id, RunInfo{Trigger: TriggerScheduled}); err != nil {
+		t.Fatalf("TriggerEntryWithInfo: %v", err)
+	}
+
+	requireRunInfo(t, nextRunInfo(t, infos), TriggerScheduled, now)
+}
+
+func TestTriggerEntryWithInfo_Errors(t *testing.T) {
+	c := New()
+	job, infos := runInfoRecorder()
+	id, _ := c.AddJob("@triggered", job, WithName("job"))
+	paused, _ := c.AddJob("@triggered", job, WithName("paused"), WithPaused())
+	valid := RunInfo{Trigger: TriggerCatchUp}
+
+	if err := c.TriggerEntryWithInfo(id, valid); !errors.Is(err, ErrNotRunning) {
+		t.Errorf("before Start: err = %v, want ErrNotRunning", err)
+	}
+	c.Start()
+	defer c.Stop()
+
+	cases := map[string]struct {
+		err  error
+		want error
+	}{
+		"zero kind":     {c.TriggerEntryWithInfo(id, RunInfo{}), ErrInvalidRunInfo},
+		"unknown kind":  {c.TriggerEntryWithInfo(id, RunInfo{Trigger: TriggerKind(99)}), ErrInvalidRunInfo},
+		"unknown entry": {c.TriggerEntryWithInfo(EntryID(999), valid), ErrEntryNotFound},
+		"unknown name":  {c.TriggerEntryWithInfoByName("missing", valid), ErrEntryNotFound},
+		"paused entry":  {c.TriggerEntryWithInfo(paused, valid), ErrEntryPaused},
+	}
+	for name, tc := range cases {
+		if !errors.Is(tc.err, tc.want) {
+			t.Errorf("%s: err = %v, want %v", name, tc.err, tc.want)
+		}
+	}
+	select {
+	case info := <-infos:
+		t.Errorf("a refused trigger ran the job (%+v)", info)
+	case <-time.After(50 * time.Millisecond):
 	}
 }

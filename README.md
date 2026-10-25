@@ -295,6 +295,13 @@ info, ok := cron.RunInfoFromContext(ctx)
 // info.ScheduledTime: the schedule's time, not the start time
 ```
 
+`TriggerEntryWithInfo` starts an entry with a `RunInfo` you choose, for example a
+catch-up you decided on yourself:
+
+```go
+c.TriggerEntryWithInfoByName("nightly", cron.RunInfo{ScheduledTime: missed, Trigger: cron.TriggerCatchUp})
+```
+
 ## Pause/Resume
 
 Temporarily suspend individual entries without removing them:
