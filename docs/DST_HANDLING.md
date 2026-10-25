@@ -74,6 +74,8 @@ The hour 1:00-1:59 AM occurs twice
   times differ each tick. Jobs with a fixed minute but wildcard hour (e.g., `0 * * * *`)
   ARE deduplicated — stricter than Vixie cron (which runs them twice) but consistent
   with Quartz's "once per wall-clock time" behavior
+- `@every` intervals are not deduplicated: they count elapsed time, not wall-clock
+  time. `@every 1h` runs at 01:30 EDT and again one hour later at 01:30 EST
 - This aligns with [RFC 5545 Section 3.3.5](https://datatracker.ietf.org/doc/html/rfc5545#section-3.3.5):
   *"If the local time described occurs more than once [...] the DATE-TIME value
   refers to the first occurrence"*

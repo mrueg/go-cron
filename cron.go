@@ -1151,9 +1151,17 @@ func (c *Cron) scheduleLocation(sched Schedule) *time.Location {
 // repeats there. A member in another zone, or without one, keeps its own
 // guard, and a member whose regular time coincides with another member's
 // repeat still runs.
+//
+// An interval (@every) is exempt: one interval after 01:30 EDT is 01:30 EST,
+// a regular run that only shows the same wall-clock time.
 func (c *Cron) isFallBackRepeat(sched Schedule, prev, next time.Time) bool {
-	u, ok := sched.(*UnionSchedule)
-	if !ok {
+	var u *UnionSchedule
+	switch s := sched.(type) {
+	case ConstantDelaySchedule, *ConstantDelaySchedule:
+		return false
+	case *UnionSchedule:
+		u = s
+	default:
 		return isDSTFallBackDuplicate(prev, next, c.scheduleLocation(sched))
 	}
 	repeat := false
