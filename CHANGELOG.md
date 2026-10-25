@@ -19,8 +19,9 @@ Bug-fix release. The public API is unchanged and the minimum Go version stays at
 
 ### Fixed
 - A panicking `ObservabilityHooks` callback no longer ends the process. Hooks
-  run in their own goroutine, and a goroutine does not contain a panic, so in
-  every release since 0.6.0 a hook that panicked crashed the program, contrary
+  run in their own goroutine, but an unrecovered panic in any goroutine ends the
+  process, so in every release since 0.6.0 a hook that panicked crashed the
+  program, contrary
   to ADR-003. `New()` now wraps the configured hooks so each one recovers the
   panic and logs it with the hook name. `ObservabilityHooks` gains no field
   ([PR#432])
