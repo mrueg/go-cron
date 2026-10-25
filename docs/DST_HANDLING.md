@@ -29,6 +29,8 @@ The hour 2:00-2:59 AM does not exist
 | `0 0 3 * * *` (3:00 AM) | Runs at 3:00 AM (as scheduled) |
 | `0 0 1 * * *` (1:00 AM) | Runs at 1:00 AM (unaffected) |
 
+`Prev()` reports the same skipped-hour run that `Next()` produces, so walking a schedule backwards over the transition day yields the same runs as walking it forwards.
+
 ### Implementation
 
 The `checkHourDSTSkip` function in `spec.go` detects when time advances by 2 hours (indicating a DST spring-forward) and allows jobs scheduled for the skipped hour to run immediately:
