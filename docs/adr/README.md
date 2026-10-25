@@ -40,6 +40,7 @@ An Architecture Decision Record captures a significant decision made about the a
 | [ADR-022](ADR-022-drain-and-upsert.md) | Windowless Drain-and-Replace | Accepted | 2026-06 |
 | [ADR-023](ADR-023-run-info-in-context.md) | Run Information in the Job Context | Accepted | 2026-10 |
 | [ADR-024](ADR-024-remove-and-wait.md) | Remove an Entry and Wait for Its Invocations | Accepted | 2026-10 |
+| [ADR-025](ADR-025-locker-interface.md) | Locker Interface for Coordination Between Instances | Accepted | 2026-10 |
 
 ## ADR Template
 

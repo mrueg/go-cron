@@ -3,6 +3,10 @@
 ## Status
 Accepted
 
+**Update 2026-10-25:** [ADR-025](ADR-025-locker-interface.md) moves the
+coordination interface (`Locker`) and the dedup wrapper into the library.
+Stores such as Redis or Postgres stay out of scope.
+
 ## Date
 2026-01-18
 
