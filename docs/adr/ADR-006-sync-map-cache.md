@@ -27,30 +27,33 @@ Caching parsed schedules provides significant performance benefits, but the cach
 
 ## Decision
 
-Use Go's `sync.Map` for the parser cache, keyed by the spec string:
+Use Go's `sync.Map` for the parser cache, keyed by the spec string. The cache is opt-in: `Parser.WithCache()` enables it, and a parser without it parses every time. The cache stores the parse result including its error, so an invalid spec is not re-parsed either:
 
 ```go
 type Parser struct {
     // ...
-    cache sync.Map // map[string]Schedule
+    cache *sync.Map // nil unless WithCache() was called; map[string]cacheEntry
 }
 
-func (p *Parser) Parse(spec string) (Schedule, error) {
-    // Fast path: cache hit
-    if cached, ok := p.cache.Load(spec); ok {
-        return cached.(Schedule), nil
+func (p Parser) Parse(spec string) (Schedule, error) {
+    if p.cache != nil {
+        if cached, ok := p.cache.Load(spec); ok {
+            if entry, ok := cached.(cacheEntry); ok {
+                return entry.schedule, entry.err
+            }
+        }
     }
 
-    // Slow path: parse and cache
     schedule, err := p.parse(spec)
-    if err != nil {
-        return nil, err
-    }
 
-    p.cache.Store(spec, schedule)
-    return schedule, nil
+    if p.cache != nil {
+        p.cache.Store(spec, cacheEntry{schedule: schedule, err: err})
+    }
+    return schedule, err
 }
 ```
+
+**Correction (2026-10-25):** The first version of this ADR showed an always-on cache that skipped errors. The code has been opt-in via `WithCache()` since commit edd6a42 (2025-12-02), before this ADR was written, and stores errors as well. Pinned by `TestParserWithCache` (opt-in) and `TestParserWithCacheStoresErrors` (errors cached) in `parser_test.go`.
 
 **Characteristics of our use case that favor sync.Map:**
 

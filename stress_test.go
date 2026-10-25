@@ -295,15 +295,15 @@ func TestMaxEntriesUnderConcurrentLoad(t *testing.T) {
 
 	wg.Wait()
 
-	// Should have approximately maxEntries successes (may be slightly over due to races)
-	if success := atomic.LoadInt32(&successCount); success < int32(maxEntries)-10 {
-		t.Errorf("expected at least %d successes, got %d", maxEntries-10, success)
+	// ADR-019: the CAS reservation makes the limit exact under contention.
+	if success := atomic.LoadInt32(&successCount); success != maxEntries {
+		t.Errorf("expected exactly %d successes, got %d", maxEntries, success)
 	}
-
-	// Total entries should not exceed limit by much
-	entries := c.Entries()
-	if len(entries) > maxEntries+20 {
-		t.Errorf("entries (%d) significantly exceeded max (%d)", len(entries), maxEntries)
+	if fail := atomic.LoadInt32(&failCount); fail != 200-maxEntries {
+		t.Errorf("expected exactly %d rejections, got %d", 200-maxEntries, fail)
+	}
+	if entries := c.Entries(); len(entries) != maxEntries {
+		t.Errorf("entries = %d, want exactly %d", len(entries), maxEntries)
 	}
 }
 

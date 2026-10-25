@@ -49,6 +49,8 @@ c := cron.New(cron.WithChain(
 ))
 ```
 
+**Update (2026-10-25):** Since commit f547ed1 (2026-02-08), the optional `ErrorJob` interface (`RunE() error`) lets a job return an error to `RetryOnError` instead of panicking. The `Job` interface is unchanged, so this decision still holds for `Job`; `ErrorJob` is an opt-in addition like `JobWithContext` (ADR-017).
+
 **Error handling patterns:**
 - **Transient failure (retry)**: `panic(err)` - triggers retry/circuit breaker
 - **Expected failure (continue)**: Log and return - job completes, scheduler continues

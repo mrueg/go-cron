@@ -43,9 +43,8 @@ type Cron struct {
 }
 
 func (c *Cron) tryIncrementEntryCount() bool {
-    if c.maxEntries == 0 {
-        c.entryCount.Add(1)
-        return true
+    if c.maxEntries <= 0 {
+        return true // unlimited
     }
 
     for {
@@ -64,6 +63,8 @@ func (c *Cron) decrementEntryCount() {
     c.entryCount.Add(-1)
 }
 ```
+
+**Update (2026-10-25):** Since commit 4f1dfef (2026-02-18, #336), `ScheduleJob` holds `runningMu`, and while the scheduler runs, the run loop handles every add in turn. Concurrent adds are therefore serialized, and the limit holds exactly through that serialization; the CAS loop is kept as a second guard and keeps `entryCount` safe to read without the lock. Pinned by `TestMaxEntriesExactUnderConcurrency` in `max_entries_test.go`, which requires exactly `maxEntries` successful adds with the scheduler stopped and running.
 
 **Usage in Add:**
 ```go

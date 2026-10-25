@@ -42,7 +42,7 @@ type Entry struct {
 | Flag | First Schedule | After First Run |
 |------|----------------|-----------------|
 | `runImmediately` | Sets Next = now | Flag cleared, normal scheduling |
-| `runOnce` | Normal scheduling | Entry removed after execution |
+| `runOnce` | Normal scheduling | Entry removed when the job is dispatched |
 
 **Implementation:**
 
@@ -56,16 +56,17 @@ func (c *Cron) scheduleEntry(e *Entry, now time.Time) {
     e.Next = e.Schedule.Next(now)
 }
 
-func (c *Cron) runEntry(e *Entry) {
-    e.WrappedJob.Run()
-
+func (c *Cron) postDispatchScheduled(e *Entry, now time.Time) {
+    // The job already runs in its own goroutine.
     if e.runOnce {
         c.removeEntry(e.ID)
         return
     }
-    c.scheduleEntry(e, c.now())
+    e.Next = e.Schedule.Next(now)
 }
 ```
+
+**Correction (2026-10-25):** The first version showed the job running synchronously before removal. Jobs always run in their own goroutine, so a run-once entry is removed at dispatch while the job may still be running, as the `WithRunOnce` documentation states. Pinned by `TestRunOnce_BasicExecution` in `cron_test.go`.
 
 ## Consequences
 
