@@ -1778,7 +1778,7 @@ UnionSchedule fires at every time at which any of its schedules fires. A time th
 
 A schedule that returns the zero time is exhausted and no longer contributes; the union is exhausted only when all of its schedules are. `Prev` returns the latest earlier time of all schedules, or the zero time if one of them does not implement `ScheduleWithPrev`.
 
-When all `CRON_TZ=`/`TZ=` specs in the union name the same zone, the scheduler suppresses the repeated hour on DST fall-back days in that zone, as it does for a single spec. Specs in different zones fall back to the scheduler's location for that check.
+On DST fall-back days the scheduler skips the repeated wall-clock time per member, in that member's own zone (its `CRON_TZ=`/`TZ=`, or the scheduler's location): members in different zones, or without one, each run their repeated hour once. A time is skipped only if every member firing then repeats; a member whose regular time coincides with another member's repeat still runs.
 
 #### func Union
 

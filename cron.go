@@ -1137,13 +1137,41 @@ func (c *Cron) scheduleEntryNext(entry *Entry, now time.Time) {
 // scheduleLocation returns the effective timezone for a schedule.
 // When a schedule has an explicit TZ= override (ss.Location is a named timezone,
 // not the time.Local sentinel set by the parser for specs without TZ=), use it.
-// Otherwise fall back to the cron instance's configured location. A
-// UnionSchedule counts as having an override when its specs agree on one.
+// Otherwise fall back to the cron instance's configured location.
 func (c *Cron) scheduleLocation(sched Schedule) *time.Location {
-	if loc := specLocation(sched); loc != nil {
-		return loc
+	if ss, ok := sched.(*SpecSchedule); ok && ss.Location != nil && ss.Location != time.Local {
+		return ss.Location
 	}
 	return c.location
+}
+
+// isFallBackRepeat reports whether next repeats the wall-clock time of prev
+// on a DST fall-back day. A UnionSchedule is checked per member, each in its
+// own location: next is skipped only if every member that fires at next
+// repeats there. A member in another zone, or without one, keeps its own
+// guard, and a member whose regular time coincides with another member's
+// repeat still runs.
+func (c *Cron) isFallBackRepeat(sched Schedule, prev, next time.Time) bool {
+	u, ok := sched.(*UnionSchedule)
+	if !ok {
+		return isDSTFallBackDuplicate(prev, next, c.scheduleLocation(sched))
+	}
+	repeat := false
+	for _, s := range u.Schedules {
+		if !firesAt(s, next) {
+			continue
+		}
+		if !c.isFallBackRepeat(s, prev, next) {
+			return false
+		}
+		repeat = true
+	}
+	return repeat
+}
+
+// firesAt reports whether s has an activation at exactly t.
+func firesAt(s Schedule, t time.Time) bool {
+	return !t.IsZero() && s.Next(t.Add(-time.Nanosecond)).Equal(t)
 }
 
 // isDSTFallBackDuplicate detects when the next scheduled time is the second
@@ -1205,7 +1233,7 @@ func (c *Cron) postDispatchScheduled(e *Entry, now time.Time) {
 	// same wall-clock time we just fired (e.Prev), skip it to prevent
 	// duplicate execution during repeated hours. See ADR-016.
 	loc := c.scheduleLocation(e.Schedule)
-	if isDSTFallBackDuplicate(e.Prev, e.Next, loc) {
+	if c.isFallBackRepeat(e.Schedule, e.Prev, e.Next) {
 		skipped := e.Next
 		e.Next = e.Schedule.Next(e.Next)
 		c.logger.Info("skip-dst-duplicate", "entry", e.ID,

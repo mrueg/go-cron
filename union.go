@@ -16,6 +16,10 @@ import (
 //
 // A schedule that returns the zero time is exhausted (ADR-015) and no longer
 // contributes; the union is exhausted only when all of its schedules are.
+//
+// On DST fall-back days the scheduler skips the repeated wall-clock time per
+// member, in that member's own time zone (ADR-016), so members with
+// different CRON_TZ= zones, or none, each run their repeated hour once.
 type UnionSchedule struct {
 	Schedules []Schedule
 }
@@ -98,36 +102,4 @@ func (u *UnionSchedule) Prev(t time.Time) time.Time {
 		}
 	}
 	return prev
-}
-
-// location returns the time zone that all SpecSchedule members name with
-// TZ= or CRON_TZ=, or nil if they name none or different ones. The scheduler
-// uses it to recognize the repeated hour on DST fall-back days.
-func (u *UnionSchedule) location() *time.Location {
-	var loc *time.Location
-	for _, s := range u.Schedules {
-		l := specLocation(s)
-		if l == nil {
-			continue
-		}
-		if loc != nil && loc.String() != l.String() {
-			return nil
-		}
-		loc = l
-	}
-	return loc
-}
-
-// specLocation returns the explicit time zone of a schedule, or nil if it has
-// none. A SpecSchedule without TZ= carries the time.Local sentinel.
-func specLocation(sched Schedule) *time.Location {
-	switch s := sched.(type) {
-	case *SpecSchedule:
-		if s.Location != nil && s.Location != time.Local {
-			return s.Location
-		}
-	case *UnionSchedule:
-		return s.location()
-	}
-	return nil
 }

@@ -138,49 +138,78 @@ func TestUnionCopiesSchedules(t *testing.T) {
 	}
 }
 
-func TestUnionScheduleLocation(t *testing.T) {
-	t.Parallel()
-	same := mustUnion(t, "CRON_TZ=America/New_York 30 1 * * *", "CRON_TZ=America/New_York 0 9 * * *", "0 12 * * *")
-	if loc := same.location(); loc == nil || loc.String() != "America/New_York" {
-		t.Errorf("location of specs sharing a zone = %v, want America/New_York", loc)
-	}
-	mixed := mustUnion(t, "CRON_TZ=America/New_York 30 1 * * *", "CRON_TZ=Europe/Berlin 0 9 * * *")
-	if loc := mixed.location(); loc != nil {
-		t.Errorf("location of specs in different zones = %v, want nil", loc)
-	}
-	none := mustUnion(t, "30 1 * * *")
-	if loc := none.location(); loc != nil {
-		t.Errorf("location of specs without a zone = %v, want nil", loc)
-	}
-}
-
-// The scheduler suppresses the repeated wall-clock time on DST fall-back
-// days in the schedule's own zone. A union whose specs share a zone must get
-// the same suppression, also when the scheduler itself runs in UTC.
-func TestDSTFallBack_UnionPerScheduleTZ(t *testing.T) {
-	if _, err := time.LoadLocation("America/New_York"); err != nil {
-		t.Skip("America/New_York timezone not available")
-	}
-	// Nov 1, 2026: 2:00 AM EDT -> 1:00 AM EST. 01:29 EDT = 05:29 UTC.
-	clock := NewFakeClock(time.Date(2026, 11, 1, 5, 29, 0, 0, time.UTC))
-	c := New(WithClock(clock), WithLocation(time.UTC))
-
-	u := mustUnion(t, "CRON_TZ=America/New_York 30 1 * * *", "CRON_TZ=America/New_York 0 9 * * *")
+// runMinutes drives a scheduler in cronLoc from start through the given
+// number of minutes, one minute at a time, and returns the runs of an entry
+// on the union of specs.
+func runMinutes(t *testing.T, cronLoc *time.Location, start time.Time, minutes int, specs ...string) int32 {
+	t.Helper()
+	clock := NewFakeClock(start)
+	c := New(WithClock(clock), WithLocation(cronLoc))
 	var runs atomic.Int32
-	if _, err := c.ScheduleJob(u, FuncJob(func() { runs.Add(1) })); err != nil {
+	if _, err := c.ScheduleJob(mustUnion(t, specs...), FuncJob(func() { runs.Add(1) })); err != nil {
 		t.Fatal(err)
 	}
 	c.Start()
 	defer c.Stop()
-
+	for range minutes {
+		clock.BlockUntil(1)
+		clock.Advance(time.Minute)
+	}
 	clock.BlockUntil(1)
-	clock.Advance(time.Minute) // 01:30 EDT
-	waitUntil(t, "the first 01:30 run", func() bool { return runs.Load() == 1 })
-
-	clock.BlockUntil(1)
-	clock.Advance(2 * time.Hour) // past 01:30 EST
 	time.Sleep(20 * time.Millisecond)
-	if got := runs.Load(); got != 1 {
-		t.Errorf("runs on the fall-back day = %d, want 1", got)
+	return runs.Load()
+}
+
+// On a DST fall-back day the scheduler skips the repeated wall-clock time.
+// For a union it checks each member in that member's own zone.
+func TestDSTFallBack_UnionPerMemberZone(t *testing.T) {
+	berlin, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Skip("Europe/Berlin timezone not available")
+	}
+	if _, err := time.LoadLocation("America/New_York"); err != nil {
+		t.Skip("America/New_York timezone not available")
+	}
+	for _, tc := range []struct {
+		name    string
+		cronLoc *time.Location
+		start   time.Time
+		specs   []string
+		want    int32
+	}{
+		{
+			// New York falls back on Nov 1, 2026: 01:30 EDT (05:30 UTC) and
+			// 01:30 EST (06:30 UTC). The Berlin member does not fire then.
+			name:    "members in different zones",
+			cronLoc: time.UTC,
+			start:   time.Date(2026, 11, 1, 5, 29, 0, 0, time.UTC),
+			specs:   []string{"CRON_TZ=America/New_York 30 1 * * *", "CRON_TZ=Europe/Berlin 0 9 * * *"},
+			want:    1,
+		},
+		{
+			// Berlin falls back on Oct 25, 2026: 02:30 CEST (00:30 UTC) and
+			// 02:30 CET (01:30 UTC). The member without a zone uses the
+			// scheduler's Berlin location.
+			name:    "member without a zone",
+			cronLoc: berlin,
+			start:   time.Date(2026, 10, 25, 0, 29, 0, 0, time.UTC),
+			specs:   []string{"CRON_TZ=America/New_York 0 9 * * *", "30 2 * * *"},
+			want:    1,
+		},
+		{
+			// 01:30 UTC is Berlin's repeated 02:30 and the regular 21:30 EDT
+			// of the New York member, which must still run.
+			name:    "regular time of one member on another member's repeat",
+			cronLoc: time.UTC,
+			start:   time.Date(2026, 10, 25, 0, 29, 0, 0, time.UTC),
+			specs:   []string{"CRON_TZ=Europe/Berlin 30 2 * * *", "CRON_TZ=America/New_York 30 21 * * *"},
+			want:    2,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := runMinutes(t, tc.cronLoc, tc.start, 121, tc.specs...); got != tc.want {
+				t.Errorf("runs = %d, want %d", got, tc.want)
+			}
+		})
 	}
 }
