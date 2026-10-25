@@ -1145,6 +1145,35 @@ func (c *Cron) scheduleLocation(sched Schedule) *time.Location {
 	return c.location
 }
 
+// isFallBackRepeat reports whether next repeats the wall-clock time of prev
+// on a DST fall-back day. A UnionSchedule is checked per member, each in its
+// own location: next is skipped only if every member that fires at next
+// repeats there. A member in another zone, or without one, keeps its own
+// guard, and a member whose regular time coincides with another member's
+// repeat still runs.
+func (c *Cron) isFallBackRepeat(sched Schedule, prev, next time.Time) bool {
+	u, ok := sched.(*UnionSchedule)
+	if !ok {
+		return isDSTFallBackDuplicate(prev, next, c.scheduleLocation(sched))
+	}
+	repeat := false
+	for _, s := range u.Schedules {
+		if !firesAt(s, next) {
+			continue
+		}
+		if !c.isFallBackRepeat(s, prev, next) {
+			return false
+		}
+		repeat = true
+	}
+	return repeat
+}
+
+// firesAt reports whether s has an activation at exactly t.
+func firesAt(s Schedule, t time.Time) bool {
+	return !t.IsZero() && s.Next(t.Add(-time.Nanosecond)).Equal(t)
+}
+
 // isDSTFallBackDuplicate detects when the next scheduled time is the second
 // occurrence of the same wall-clock time as the previous execution, which
 // happens during DST fall-back transitions when clocks repeat an hour.
@@ -1204,7 +1233,7 @@ func (c *Cron) postDispatchScheduled(e *Entry, now time.Time) {
 	// same wall-clock time we just fired (e.Prev), skip it to prevent
 	// duplicate execution during repeated hours. See ADR-016.
 	loc := c.scheduleLocation(e.Schedule)
-	if isDSTFallBackDuplicate(e.Prev, e.Next, loc) {
+	if c.isFallBackRepeat(e.Schedule, e.Prev, e.Next) {
 		skipped := e.Next
 		e.Next = e.Schedule.Next(e.Next)
 		c.logger.Info("skip-dst-duplicate", "entry", e.ID,
