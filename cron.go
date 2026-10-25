@@ -1175,6 +1175,7 @@ func (c *Cron) handleTimeBackwards(now time.Time) {
 	copy(entriesCopy, c.entries)
 	for _, e := range entriesCopy {
 		if !e.Prev.IsZero() && e.Prev.After(now) {
+			e.immediateDue = false
 			e.Next = e.Schedule.Next(now)
 			c.entries.Update(e)
 			c.logger.Info("reschedule", "reason", "time moved backwards",

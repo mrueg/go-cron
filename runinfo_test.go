@@ -81,6 +81,25 @@ func TestRunInfo_RunImmediately(t *testing.T) {
 	requireRunInfo(t, nextRunInfo(t, infos), TriggerScheduled, time.Date(2026, 1, 18, 11, 0, 0, 0, time.UTC))
 }
 
+// A Prev in the future (persisted by a host whose clock ran ahead) makes the
+// scheduler reschedule the run-immediately entry from its schedule. The fire
+// it then gets is a fire of the schedule, not the immediate run.
+func TestRunInfo_RunImmediatelyRescheduledByTimeBackwards(t *testing.T) {
+	start := time.Date(2026, 1, 18, 10, 17, 0, 0, time.UTC)
+	clock := NewFakeClock(start)
+	c := New(WithClock(clock), WithParser(secondParser))
+	defer c.Stop()
+
+	job, infos := runInfoRecorder()
+	if _, err := c.AddJob("0 0 * * * *", job, WithRunImmediately(), WithPrev(start.Add(13*time.Minute))); err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+	c.Start()
+	clock.BlockUntil(1)
+	clock.Advance(43 * time.Minute)
+	requireRunInfo(t, nextRunInfo(t, infos), TriggerScheduled, time.Date(2026, 1, 18, 11, 0, 0, 0, time.UTC))
+}
+
 func TestRunInfo_ManualTrigger(t *testing.T) {
 	now := time.Date(2026, 1, 18, 10, 30, 0, 0, time.UTC)
 	clock := NewFakeClock(now)
