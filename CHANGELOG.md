@@ -12,6 +12,46 @@ Originally based on [robfig/cron](https://github.com/robfig/cron).
 ### Planned for v2
 - Context-aware Job interface with graceful shutdown support
 
+## [0.16.2] - 2026-10-25
+
+Bug-fix release. The public API is unchanged and the minimum Go version stays at
+1.26. Two fixes change runtime behaviour.
+
+### Fixed
+- A panicking `ObservabilityHooks` callback no longer ends the process. Hooks
+  run in their own goroutine, and a goroutine does not contain a panic, so in
+  every release since 0.6.0 a hook that panicked crashed the program, contrary
+  to ADR-003. `New()` now wraps the configured hooks so each one recovers the
+  panic and logs it with the hook name. `ObservabilityHooks` gains no field
+  ([PR#432])
+- On the DST spring-forward day, `Prev()` now reports the run that a job
+  scheduled in the skipped hour makes in the hour after the gap, so `Prev()` and
+  `Next()` agree. For `CRON_TZ=America/New_York 30 2 * * *`,
+  `Prev(2026-03-09 00:00)` returns 2026-03-08 03:30 EDT instead of
+  2026-03-07 02:30 EST ([PR#430])
+- `Next()` no longer drops the spring-forward run when the hour before the gap
+  is scheduled too. `0 1,2 * * *` in America/New_York went from 01:00 EST
+  straight to the next day and now returns 03:00 EDT, as `0 2 * * *` always
+  did. Schedules of this shape gain one run on spring-forward days ([PR#430])
+
+### Documentation
+- ADR-016, `doc.go` and `docs/DST_HANDLING.md` state that a 2:30 job runs at
+  3:30 on the spring-forward day, which is what `Next()` has done since the fork
+  took robfig/cron#541; they had said 3:00 ([PR#430])
+- ADR-002, 003, 006, 009, 012, 016, 017, 018 and 019 are corrected or dated to
+  match the code, and each decision that had no test is now pinned by one
+  ([PR#432])
+
+### Internal
+- Toolchain updated to go1.27.3; the `go` directive stays at 1.26 ([PR#422],
+  [PR#425])
+- CI synced with the organization's Go library template; the secret scan is
+  betterleaks instead of gitleaks ([PR#415], [PR#416], [PR#418])
+- Renovate extends the organization preset and runs `go mod tidy` after Go
+  module updates ([PR#423], [PR#424])
+- `.bestpractices.json` records the evidence for the OpenSSF Best Practices
+  badge ([PR#414], [PR#417])
+
 ## [0.16.1] - 2026-09-22
 
 Maintenance release. The public API is unchanged, the minimum Go version stays
@@ -664,7 +704,19 @@ This fork includes all features from robfig/cron v3 plus:
    _, err := cron.ParseStandard("*/60 * * * *") // Error: step (60) must be less than range size (60)
    ```
 
-[Unreleased]: https://github.com/netresearch/go-cron/compare/v0.16.1...HEAD
+[Unreleased]: https://github.com/netresearch/go-cron/compare/v0.16.2...HEAD
+[0.16.2]: https://github.com/netresearch/go-cron/compare/v0.16.1...v0.16.2
+[PR#414]: https://github.com/netresearch/go-cron/pull/414
+[PR#415]: https://github.com/netresearch/go-cron/pull/415
+[PR#416]: https://github.com/netresearch/go-cron/pull/416
+[PR#417]: https://github.com/netresearch/go-cron/pull/417
+[PR#418]: https://github.com/netresearch/go-cron/pull/418
+[PR#422]: https://github.com/netresearch/go-cron/pull/422
+[PR#423]: https://github.com/netresearch/go-cron/pull/423
+[PR#424]: https://github.com/netresearch/go-cron/pull/424
+[PR#425]: https://github.com/netresearch/go-cron/pull/425
+[PR#430]: https://github.com/netresearch/go-cron/pull/430
+[PR#432]: https://github.com/netresearch/go-cron/pull/432
 [0.16.1]: https://github.com/netresearch/go-cron/compare/v0.16.0...v0.16.1
 [PR#404]: https://github.com/netresearch/go-cron/pull/404
 [PR#405]: https://github.com/netresearch/go-cron/pull/405
