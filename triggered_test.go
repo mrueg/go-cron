@@ -499,7 +499,7 @@ func TestTriggerEntry_MultipleTriggers(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	time.Sleep(20 * time.Millisecond)
+	waitUntil(t, "3 runs", func() bool { return runs.Load() >= 3 })
 	if n := runs.Load(); n != 3 {
 		t.Errorf("expected 3 runs, got %d", n)
 	}

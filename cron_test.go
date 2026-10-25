@@ -1353,7 +1353,11 @@ func TestFakeClock_EverySecondSchedule(t *testing.T) {
 		}
 	}
 
-	time.Sleep(10 * time.Millisecond)
+	waitUntil(t, "5 job runs", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return count >= 5
+	})
 
 	mu.Lock()
 	if count != 5 {
@@ -1385,7 +1389,11 @@ func TestFakeClock_CronExpressionSchedule(t *testing.T) {
 
 	// Advance to 11:00:00
 	fakeClock.Advance(5 * time.Second)
-	time.Sleep(10 * time.Millisecond)
+	waitUntil(t, "job to fire at top of hour", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return fired
+	})
 
 	mu.Lock()
 	if !fired {
@@ -1428,7 +1436,11 @@ func TestFakeClock_MultipleJobsDifferentIntervals(t *testing.T) {
 		}
 	}
 
-	time.Sleep(10 * time.Millisecond)
+	waitUntil(t, "fast job 10 runs and slow job 2 runs", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return fastCount >= 10 && slowCount >= 2
+	})
 
 	mu.Lock()
 	if fastCount != 10 {
@@ -1657,8 +1669,8 @@ func TestEntryByNameWhileRunning(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Small delay to ensure job is added
-	time.Sleep(10 * time.Millisecond)
+	// Wait until the run loop reports the job
+	waitUntil(t, "entry my-job to be added", func() bool { return c.EntryByName("my-job").Valid() })
 
 	entry := c.EntryByName("my-job")
 	if !entry.Valid() {
@@ -1746,7 +1758,7 @@ func TestRemoveByNameWhileRunning(t *testing.T) {
 		t.Error("expected RemoveByName to return true")
 	}
 
-	time.Sleep(10 * time.Millisecond)
+	waitUntil(t, "entry my-job to be removed", func() bool { return !c.EntryByName("my-job").Valid() })
 
 	entry := c.EntryByName("my-job")
 	if entry.Valid() {
@@ -1801,7 +1813,7 @@ func TestRemoveByTagWhileRunning(t *testing.T) {
 		t.Errorf("expected 2 entries removed, got %d", count)
 	}
 
-	time.Sleep(10 * time.Millisecond)
+	waitUntil(t, "1 entry remaining", func() bool { return len(c.Entries()) <= 1 })
 
 	if len(c.Entries()) != 1 {
 		t.Errorf("expected 1 entry remaining, got %d", len(c.Entries()))
@@ -3084,7 +3096,7 @@ func TestUpdateSchedule(t *testing.T) {
 	c.Start()
 	clock.BlockUntil(1)
 	clock.Advance(time.Second)
-	time.Sleep(10 * time.Millisecond)
+	waitUntil(t, "1 run before update", func() bool { return atomic.LoadInt32(&runs) >= 1 })
 	if atomic.LoadInt32(&runs) != 1 {
 		t.Fatalf("expected 1 run before update, got %d", runs)
 	}
@@ -3099,7 +3111,7 @@ func TestUpdateSchedule(t *testing.T) {
 	}
 	clock.BlockUntil(1)
 	clock.Advance(1 * time.Second)
-	time.Sleep(10 * time.Millisecond)
+	waitUntil(t, "2 runs after schedule update", func() bool { return atomic.LoadInt32(&runs) >= 2 })
 	if atomic.LoadInt32(&runs) != 2 {
 		t.Errorf("expected 2 runs after schedule update, got %d", runs)
 	}
@@ -3119,7 +3131,7 @@ func TestUpdateJob(t *testing.T) {
 	c.Start()
 	clock.BlockUntil(1)
 	clock.Advance(time.Second)
-	time.Sleep(10 * time.Millisecond)
+	waitUntil(t, "1 run before update", func() bool { return atomic.LoadInt32(&runs) >= 1 })
 	if atomic.LoadInt32(&runs) != 1 {
 		t.Fatalf("expected 1 run before update, got %d", runs)
 	}
@@ -3134,7 +3146,7 @@ func TestUpdateJob(t *testing.T) {
 	}
 	clock.BlockUntil(1)
 	clock.Advance(1 * time.Second)
-	time.Sleep(10 * time.Millisecond)
+	waitUntil(t, "2 runs after job update", func() bool { return atomic.LoadInt32(&runs) >= 2 })
 	if atomic.LoadInt32(&runs) != 2 {
 		t.Errorf("expected 2 runs after job update, got %d", runs)
 	}
@@ -3180,7 +3192,7 @@ func TestUpdateScheduleByName(t *testing.T) {
 	c.Start()
 	clock.BlockUntil(1)
 	clock.Advance(time.Second)
-	time.Sleep(10 * time.Millisecond)
+	waitUntil(t, "1 run before update", func() bool { return atomic.LoadInt32(&runs) >= 1 })
 	if atomic.LoadInt32(&runs) != 1 {
 		t.Fatalf("expected 1 run before update, got %d", runs)
 	}
@@ -3195,7 +3207,7 @@ func TestUpdateScheduleByName(t *testing.T) {
 	}
 	clock.BlockUntil(1)
 	clock.Advance(1 * time.Second)
-	time.Sleep(10 * time.Millisecond)
+	waitUntil(t, "2 runs after update by name", func() bool { return atomic.LoadInt32(&runs) >= 2 })
 	if atomic.LoadInt32(&runs) != 2 {
 		t.Errorf("expected 2 runs after update by name, got %d", runs)
 	}
@@ -3215,7 +3227,7 @@ func TestUpdateJobByName(t *testing.T) {
 	c.Start()
 	clock.BlockUntil(1)
 	clock.Advance(time.Second)
-	time.Sleep(10 * time.Millisecond)
+	waitUntil(t, "1 run before update", func() bool { return atomic.LoadInt32(&runs) >= 1 })
 	if atomic.LoadInt32(&runs) != 1 {
 		t.Fatalf("expected 1 run before update, got %d", runs)
 	}
@@ -3230,7 +3242,7 @@ func TestUpdateJobByName(t *testing.T) {
 	}
 	clock.BlockUntil(1)
 	clock.Advance(1 * time.Second)
-	time.Sleep(10 * time.Millisecond)
+	waitUntil(t, "2 runs after update by spec name", func() bool { return atomic.LoadInt32(&runs) >= 2 })
 	if atomic.LoadInt32(&runs) != 2 {
 		t.Errorf("expected 2 runs after update by spec name, got %d", runs)
 	}
@@ -3342,7 +3354,7 @@ func TestUpdateBeforeStart(t *testing.T) {
 			// Advance 1 more second (total 5s) - should trigger
 			clock.BlockUntil(1)
 			clock.Advance(1 * time.Second)
-			time.Sleep(10 * time.Millisecond)
+			waitUntil(t, "1 run after 5s", func() bool { return runs.Load() >= 1 })
 			if got := runs.Load(); got != 1 {
 				t.Errorf("expected 1 run after 5s, got %d", got)
 			}
@@ -3366,7 +3378,7 @@ func TestUpdateEntry(t *testing.T) {
 	c.Start()
 	clock.BlockUntil(1)
 	clock.Advance(time.Second)
-	time.Sleep(10 * time.Millisecond)
+	waitUntil(t, "1 run of job A before update", func() bool { return atomic.LoadInt32(&runsA) >= 1 })
 	if got := atomic.LoadInt32(&runsA); got != 1 {
 		t.Fatalf("expected 1 run of job A before update, got %d", got)
 	}
@@ -3387,7 +3399,8 @@ func TestUpdateEntry(t *testing.T) {
 	// Advance 1 more second (total 5s) — new job B should fire.
 	clock.BlockUntil(1)
 	clock.Advance(1 * time.Second)
-	time.Sleep(10 * time.Millisecond)
+	waitUntil(t, "1 run of job B after 5s", func() bool { return atomic.LoadInt32(&runsB) >= 1 })
+	time.Sleep(10 * time.Millisecond) // give a run of the old job A time to show up
 	if got := atomic.LoadInt32(&runsB); got != 1 {
 		t.Errorf("expected 1 run of job B after 5s, got %d", got)
 	}
@@ -3419,7 +3432,7 @@ func TestUpdateEntryByName(t *testing.T) {
 	c.Start()
 	clock.BlockUntil(1)
 	clock.Advance(time.Second)
-	time.Sleep(10 * time.Millisecond)
+	waitUntil(t, "1 run of job A", func() bool { return atomic.LoadInt32(&runsA) >= 1 })
 	if got := atomic.LoadInt32(&runsA); got != 1 {
 		t.Fatalf("expected 1 run of job A, got %d", got)
 	}
@@ -3430,7 +3443,8 @@ func TestUpdateEntryByName(t *testing.T) {
 	}
 	clock.BlockUntil(1)
 	clock.Advance(5 * time.Second)
-	time.Sleep(10 * time.Millisecond)
+	waitUntil(t, "1 run of job B", func() bool { return atomic.LoadInt32(&runsB) >= 1 })
+	time.Sleep(10 * time.Millisecond) // give a run of the old job A time to show up
 	if got := atomic.LoadInt32(&runsB); got != 1 {
 		t.Errorf("expected 1 run of job B, got %d", got)
 	}
@@ -3501,7 +3515,8 @@ func TestUpdateEntryBeforeStart(t *testing.T) {
 	// 5s total — should fire new job B.
 	clock.BlockUntil(1)
 	clock.Advance(1 * time.Second)
-	time.Sleep(10 * time.Millisecond)
+	waitUntil(t, "1 run of job B after 5s", func() bool { return atomic.LoadInt32(&runsB) >= 1 })
+	time.Sleep(10 * time.Millisecond) // give a run of the old job A time to show up
 	if got := atomic.LoadInt32(&runsB); got != 1 {
 		t.Errorf("expected 1 run of job B after 5s, got %d", got)
 	}
@@ -3721,7 +3736,7 @@ func TestUpdateEntryJob(t *testing.T) {
 	c.Start()
 	clock.BlockUntil(1)
 	clock.Advance(time.Second)
-	time.Sleep(10 * time.Millisecond)
+	waitUntil(t, "1 run of job A", func() bool { return atomic.LoadInt32(&runsA) >= 1 })
 	if got := atomic.LoadInt32(&runsA); got != 1 {
 		t.Fatalf("expected 1 run of job A, got %d", got)
 	}
@@ -3742,7 +3757,7 @@ func TestUpdateEntryJob(t *testing.T) {
 	// Advance 1 more second (total 5s) — should fire
 	clock.BlockUntil(1)
 	clock.Advance(1 * time.Second)
-	time.Sleep(10 * time.Millisecond)
+	waitUntil(t, "1 run of job B after 5s", func() bool { return atomic.LoadInt32(&runsB) >= 1 })
 	if got := atomic.LoadInt32(&runsB); got != 1 {
 		t.Errorf("expected 1 run of job B after 5s, got %d", got)
 	}
@@ -3763,7 +3778,7 @@ func TestUpdateEntryJobByName(t *testing.T) {
 	c.Start()
 	clock.BlockUntil(1)
 	clock.Advance(time.Second)
-	time.Sleep(10 * time.Millisecond)
+	waitUntil(t, "1 run of job A", func() bool { return atomic.LoadInt32(&runsA) >= 1 })
 	if got := atomic.LoadInt32(&runsA); got != 1 {
 		t.Fatalf("expected 1 run of job A, got %d", got)
 	}
@@ -3774,7 +3789,7 @@ func TestUpdateEntryJobByName(t *testing.T) {
 	}
 	clock.BlockUntil(1)
 	clock.Advance(5 * time.Second)
-	time.Sleep(10 * time.Millisecond)
+	waitUntil(t, "1 run of job B", func() bool { return atomic.LoadInt32(&runsB) >= 1 })
 	if got := atomic.LoadInt32(&runsB); got != 1 {
 		t.Errorf("expected 1 run of job B, got %d", got)
 	}
@@ -4792,7 +4807,7 @@ func TestPauseEntryWhileRunning(t *testing.T) {
 	c.Start()
 	clock.BlockUntil(1)
 	clock.Advance(time.Second)
-	time.Sleep(10 * time.Millisecond)
+	waitUntil(t, "1 run before pause", func() bool { return runs.Load() >= 1 })
 
 	if n := runs.Load(); n != 1 {
 		t.Fatalf("expected 1 run before pause, got %d", n)
@@ -4846,7 +4861,7 @@ func TestResumeEntry(t *testing.T) {
 
 	clock.BlockUntil(1)
 	clock.Advance(time.Second)
-	time.Sleep(10 * time.Millisecond)
+	waitUntil(t, "1 run after resume", func() bool { return runs.Load() >= 1 })
 
 	if n := runs.Load(); n != 1 {
 		t.Errorf("expected 1 run after resume, got %d", n)
@@ -4868,7 +4883,7 @@ func TestPauseEntryByName(t *testing.T) {
 	c.Start()
 	clock.BlockUntil(1)
 	clock.Advance(time.Second)
-	time.Sleep(10 * time.Millisecond)
+	waitUntil(t, "1 run before pause", func() bool { return runs.Load() >= 1 })
 
 	if n := runs.Load(); n != 1 {
 		t.Fatalf("expected 1 run before pause, got %d", n)
@@ -4919,7 +4934,7 @@ func TestResumeEntryByName(t *testing.T) {
 
 	clock.BlockUntil(1)
 	clock.Advance(time.Second)
-	time.Sleep(10 * time.Millisecond)
+	waitUntil(t, "1 run after resume by name", func() bool { return runs.Load() >= 1 })
 
 	if n := runs.Load(); n != 1 {
 		t.Errorf("expected 1 run after resume by name, got %d", n)
@@ -5021,7 +5036,8 @@ func TestPausedEntryKeepsSchedule(t *testing.T) {
 
 	// Next tick should fire exactly once (no catch-up)
 	clock.Advance(time.Second)
-	time.Sleep(10 * time.Millisecond)
+	waitUntil(t, "1 run after resume", func() bool { return runs.Load() >= 1 })
+	time.Sleep(10 * time.Millisecond) // give a catch-up run time to show up
 
 	if n := runs.Load(); n != 1 {
 		t.Errorf("expected exactly 1 run after resume (no catch-up), got %d", n)
@@ -5053,7 +5069,7 @@ func TestWithPausedOption(t *testing.T) {
 	c.ResumeEntry(id)
 	clock.BlockUntil(1)
 	clock.Advance(time.Second)
-	time.Sleep(10 * time.Millisecond)
+	waitUntil(t, "1 run after resuming WithPaused entry", func() bool { return runs.Load() >= 1 })
 
 	if n := runs.Load(); n != 1 {
 		t.Errorf("expected 1 run after resuming WithPaused entry, got %d", n)
