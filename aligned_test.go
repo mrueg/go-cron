@@ -184,3 +184,20 @@ func TestDSTFallBack_AlignedEveryKeepsRegularRun(t *testing.T) {
 		waitUntil(t, "the next hourly run", func() bool { return runs.Load() == int32(i+1) })
 	}
 }
+
+// A zero or negative interval cannot form a grid; like ConstantDelaySchedule,
+// the schedule then moves one second, so the scheduler does not spin and
+// nothing divides by zero.
+func TestAlignedScheduleInvalidInterval(t *testing.T) {
+	t.Parallel()
+	at := time.Date(2026, 10, 26, 10, 17, 0, 0, time.UTC)
+	for _, d := range []time.Duration{0, -5 * time.Minute} {
+		s := AlignedSchedule{Interval: d}
+		if got := s.Next(at); !got.Equal(at.Add(time.Second)) {
+			t.Errorf("Interval %v: Next = %v, want %v", d, got, at.Add(time.Second))
+		}
+		if got := s.Prev(at); !got.Equal(at.Add(-time.Second)) {
+			t.Errorf("Interval %v: Prev = %v, want %v", d, got, at.Add(-time.Second))
+		}
+	}
+}
