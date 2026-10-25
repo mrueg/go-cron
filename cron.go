@@ -1157,7 +1157,7 @@ func (c *Cron) scheduleLocation(sched Schedule) *time.Location {
 func (c *Cron) isFallBackRepeat(sched Schedule, prev, next time.Time) bool {
 	var u *UnionSchedule
 	switch s := sched.(type) {
-	case ConstantDelaySchedule, *ConstantDelaySchedule:
+	case ConstantDelaySchedule, *ConstantDelaySchedule, AlignedSchedule, *AlignedSchedule:
 		return false
 	case *UnionSchedule:
 		u = s

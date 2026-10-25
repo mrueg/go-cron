@@ -264,10 +264,12 @@ func (r *SpecAnalysis) analyzeSpec(spec string) {
 
 // analyzeDescriptor extracts information from descriptor-style specs.
 func (r *SpecAnalysis) analyzeDescriptor(descriptor string) {
-	if strings.HasPrefix(descriptor, descriptorEvery) {
-		durationStr := descriptor[len(descriptorEvery):]
-		if duration, err := time.ParseDuration(durationStr); err == nil {
-			r.Interval = duration
+	for _, kw := range []string{descriptorEveryAligned, descriptorEveryStart, descriptorEvery} {
+		if strings.HasPrefix(descriptor, kw) {
+			if duration, err := time.ParseDuration(descriptor[len(kw):]); err == nil {
+				r.Interval = duration
+			}
+			return
 		}
 	}
 }

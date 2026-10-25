@@ -129,7 +129,9 @@ Note: Sunday can be represented by both 0 and 7.
 | `@weekly` | Once a week, midnight Sunday | `0 0 * * 0` |
 | `@daily` | Once a day, midnight | `0 0 * * *` |
 | `@hourly` | Once an hour, beginning of hour | `0 * * * *` |
-| `@every <duration>` | Every interval | e.g., `@every 1h30m` |
+| `@every <duration>` | Every interval, counted from start | e.g., `@every 1h30m` |
+| `@every_aligned <duration>` | Every interval on the grid since 1970-01-01 00:00 UTC, unaffected by restarts | e.g., `@every_aligned 1h` |
+| `@every_start <duration>` | Every interval from start, also with the `AlignEvery` parse option | e.g., `@every_start 1h` |
 | `@triggered` | Never auto-runs; manual only | aliases: `@manual`, `@none` |
 
 ### Wraparound Ranges

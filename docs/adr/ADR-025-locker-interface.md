@@ -56,6 +56,8 @@ func SkipWhileLocked(locker Locker, key string, ttl time.Duration, logger Logger
    the spec and the time zone, or they compute different scheduled times. An
    `@every` schedule counts from each instance's own start, so instances never
    share its times and it cannot be deduplicated; the documentation says so.
+   `@every_aligned` ([ADR-026](ADR-026-aligned-intervals.md)) gives intervals a
+   shared grid.
 4. **Only `TriggerScheduled` and `TriggerCatchUp` reserve a key.** Both carry a
    time of the schedule, which every instance shares. Manual, dependency and
    immediate runs carry the time they were started, which no other instance

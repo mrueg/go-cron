@@ -1807,6 +1807,21 @@ c.ScheduleJob(u, job, cron.WithName("report"))
 
 ---
 
+### AlignedSchedule
+
+```go
+type AlignedSchedule struct {
+    Interval time.Duration
+}
+
+func EveryAligned(d time.Duration) AlignedSchedule
+func EveryAlignedWithMin(d, minInterval time.Duration) AlignedSchedule
+```
+
+AlignedSchedule fires at the multiples of `Interval` since the Unix epoch, 1970-01-01 00:00 UTC. Every scheduler computes the same times whenever it started, so a restart does not move the next run and several instances can deduplicate a run with `SkipDuplicateRuns`. `ConstantDelaySchedule` (`@every`) counts from the start instead. The spec `@every_aligned <duration>` parses to an `AlignedSchedule`, and with the `AlignEvery` parse option so does plain `@every`; `@every_start <duration>` always parses to a `ConstantDelaySchedule`. The grid is absolute time, so an interval that does not divide a day falls on different clock times each day. Like `@every`, it is exempt from the DST fall-back guard. See [ADR-026](adr/ADR-026-aligned-intervals.md).
+
+---
+
 ### TriggeredSchedule
 
 ```go
@@ -1902,10 +1917,12 @@ const (
     Dow                                     // Day of week field
     DowOptional                             // Day of week, optional
     Descriptor                              // Enable @hourly, @every, etc.
+    // ... Year, Hash, DowNth, DowLast, DomL, DomW, DowOrDom
+    AlignEvery                              // Plain @every fires on the epoch grid, like @every_aligned
 )
 ```
 
-ParseOption represents parser configuration flags.
+ParseOption represents parser configuration flags. `AlignEvery` changes only what a plain `@every` means; `@every_aligned` and `@every_start` keep their meaning on every parser.
 
 ---
 
@@ -2074,7 +2091,7 @@ func SkipDuplicateRuns(locker Locker, name string, ttl time.Duration, logger Log
 
 SkipDuplicateRuns lets one scheduled time of a job run once across all scheduler instances that share `locker`. Before a scheduled run or a catch-up it reserves the key `name@<scheduled time in UTC>` for `ttl`; the instance that gets the reservation runs the job, every other instance skips that time. The reservation is not released after the run, so an instance with a late clock still finds the time taken. Manual, dependency and immediate runs carry their start time and run without a reservation.
 
-- `name` must be the same on every instance; `ttl` must exceed the largest clock difference between them. All instances need the same spec and time zone. `@every` counts from each instance's own start, so it cannot be deduplicated; use a cron expression.
+- `name` must be the same on every instance; `ttl` must exceed the largest clock difference between them. All instances need the same spec and time zone. `@every` counts from each instance's own start, so it cannot be deduplicated; use `@every_aligned` or a cron expression.
 - A skipped run counts as `ResultSkipped` in a workflow, so dependents of a parent run only on the instance that ran the parent.
 - The run is skipped and an error logged when the locker fails or the context carries no `RunInfo`. Place it before `RetryWithBackoff`, `RetryOnError` and `CircuitBreaker`, which drop the context.
 - At most once: if the holder stops during the run, no other instance runs that time.

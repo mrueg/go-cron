@@ -262,6 +262,20 @@ Note: The interval does not take the job runtime into account.  For example,
 if a job takes 3 minutes to run, and it is scheduled to run every 5 minutes,
 it will have only 2 minutes of idle time between each run.
 
+Because @every counts from the start, a restart moves its next run: a
+scheduler restarted more often than the interval never runs the job, and
+several instances never share a scheduled time. Two more descriptors fix the
+meaning of an interval regardless of the parser:
+
+	@every_aligned <duration> | Multiples of the duration since 1970-01-01 00:00 UTC
+	@every_start <duration>   | From the start, like @every by default
+
+"@every_aligned 1h" runs at every full hour UTC, whenever the scheduler
+started, so restarts do not delay it and SkipDuplicateRuns can deduplicate
+it across instances. An application can make plain @every aligned for all
+specs with the AlignEvery parse option; @every_start then still counts from
+the start. See ADR-026.
+
 # Time zones
 
 By default, all interpretation and scheduling is done in the machine's local
