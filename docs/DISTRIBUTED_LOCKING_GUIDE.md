@@ -62,7 +62,7 @@ Correct deduplication reserves a key made of the job name **and the scheduled ti
 | Run each scheduled time once across instances | job name + scheduled time | No, expires via TTL | `SkipDuplicateRuns` |
 | Never run jobs on one resource at the same time | resource name | Yes | `SkipWhileLocked` |
 
-All instances must compute the same scheduled times: same spec, same time zone (`CRON_TZ=` or the same `WithLocation`). By default `@every` counts from each instance's own start and cannot be deduplicated; use `@every_aligned` (or plain `@every` with the `AlignEvery` parse option), which fires on multiples of the interval since 1970-01-01 00:00 UTC on every instance, or a cron expression.
+All instances must compute the same scheduled times, so they need the same spec. A cron expression also needs the same time zone (`CRON_TZ=` or the same `WithLocation`); an aligned interval does not, because its grid counts in absolute time. By default `@every` counts from each instance's own start and cannot be deduplicated; use `@every_aligned` (or plain `@every` with the `AlignEvery` parse option), which fires on multiples of the interval since 1970-01-01 00:00 UTC on every instance, or a cron expression.
 
 ## Implementation Patterns
 

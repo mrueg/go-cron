@@ -53,7 +53,9 @@ func SkipWhileLocked(locker Locker, key string, ttl time.Duration, logger Logger
    nanoseconds>`.** UTC makes instances in different zones produce one key for
    one instant. The name is a parameter, because `RunInfo` carries no entry
    name and a chain applies to every entry it wraps. The instances must share
-   the spec and the time zone, or they compute different scheduled times. By
+   the spec, or they compute different scheduled times. A cron expression
+   also needs the same time zone; an aligned interval does not, because its
+   grid counts in absolute time. By
    default an `@every` schedule counts from each instance's own start, so
    instances never share its times and it cannot be deduplicated; the
    documentation says so.

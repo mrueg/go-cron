@@ -152,14 +152,18 @@ func TestAlignedEveryRunsDespiteRestart(t *testing.T) {
 	waitUntil(t, "the 11:00 run", func() bool { return runs.Load() == 1 })
 }
 
-// Two schedulers started four seconds apart share each scheduled time of
-// @every_aligned, so SkipDuplicateRuns runs it once.
+// Two schedulers started four seconds apart, in different time zones, share
+// each scheduled time of @every_aligned, so SkipDuplicateRuns runs it once.
 func TestAlignedEveryDeduplicatesAcrossInstances(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skip("America/New_York timezone not available")
+	}
 	clock := NewFakeClock(time.Date(2026, 10, 26, 10, 0, 3, 0, time.UTC))
 	locker := NewMemoryLocker(clock)
 	var runs atomic.Int32
-	for i := range 2 {
-		c := New(WithClock(clock), WithLocation(time.UTC))
+	for i, loc := range []*time.Location{time.UTC, ny} {
+		c := New(WithClock(clock), WithLocation(loc))
 		job := NewChain(SkipDuplicateRuns(locker, "report", time.Hour, DiscardLogger)).Then(FuncJob(func() { runs.Add(1) }))
 		if _, err := c.AddJob("@every_aligned 5m", job); err != nil {
 			t.Fatal(err)
