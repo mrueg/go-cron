@@ -37,6 +37,9 @@ An Architecture Decision Record captures a significant decision made about the a
 | [ADR-019](ADR-019-atomic-entry-limit.md) | Atomic CAS for Entry Count Limiting | Accepted | 2025-12 |
 | [ADR-020](ADR-020-feature-scope-boundary.md) | Feature Scope and Boundary Definition | Accepted | 2026-01 |
 | [ADR-021](ADR-021-quoted-timezone-values.md) | Quoted Timezone Values in Spec Strings | Accepted | 2026-02 |
+| [ADR-022](ADR-022-drain-and-upsert.md) | Windowless Drain-and-Replace | Accepted | 2026-06 |
+| [ADR-023](ADR-023-run-info-in-context.md) | Run Information in the Job Context | Accepted | 2026-10 |
+| [ADR-024](ADR-024-remove-and-wait.md) | Remove an Entry and Wait for Its Invocations | Accepted | 2026-10 |
 
 ## ADR Template
 

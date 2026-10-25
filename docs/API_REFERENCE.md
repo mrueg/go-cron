@@ -879,6 +879,45 @@ func (c *Cron) RemoveByName(name string) bool
 RemoveByName removes the entry with the given name.
 Returns true if an entry was removed, false if no entry had that name.
 
+`RemoveByName` does not wait for a running invocation, and `WaitForJobByName`
+cannot wait afterwards: the removal deletes the name, so the lookup finds
+nothing and returns at once. Use `RemoveByNameAndWait` to remove and wait.
+
+#### func (*Cron) RemoveAndWait
+
+```go
+func (c *Cron) RemoveAndWait(ctx context.Context, id EntryID) error
+```
+
+RemoveAndWait removes the entry with the given ID and blocks until every
+invocation of it that was in flight at the removal has returned, or until `ctx`
+is done. The removal cancels the entry's per-entry context, so a
+`JobWithContext` can stop early. The job tracker is taken in the same run-loop
+step that removes the entry, so no invocation can start unseen in between. The
+wait itself holds no lock and does not block the run loop.
+
+Returns `ErrEntryNotFound` if no entry has the given ID, `ctx.Err()` if `ctx` is
+done before the invocations have returned (the entry is removed either way), and
+`nil` otherwise. See [ADR-024](adr/ADR-024-remove-and-wait.md).
+
+**Example:**
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+if err := c.RemoveAndWait(ctx, id); errors.Is(err, context.DeadlineExceeded) {
+    log.Print("the removed job is still running")
+}
+```
+
+#### func (*Cron) RemoveByNameAndWait
+
+```go
+func (c *Cron) RemoveByNameAndWait(ctx context.Context, name string) error
+```
+
+RemoveByNameAndWait is the named variant of `RemoveAndWait`. Returns
+`ErrEntryNotFound` if no entry has the given name.
+
 #### func (*Cron) RemoveByTag
 
 ```go
@@ -2714,6 +2753,45 @@ c.AddJob("@triggered", cron.FuncJobWithContext(func(ctx context.Context) {
         log.Printf("Running as part of workflow %s", execID)
     }
 }), cron.WithName("transform"))
+```
+
+### RunInfoFromContext
+
+```go
+func RunInfoFromContext(ctx context.Context) (RunInfo, bool)
+```
+
+RunInfoFromContext returns the `RunInfo` of the invocation that `ctx` belongs
+to. `ok` is false if `ctx` was not created by the scheduler for a job run. Every
+invocation carries one, whether a `JobWithContext` runs directly or behind
+chain wrappers that pass the context on.
+
+```go
+type RunInfo struct {
+    ScheduledTime time.Time   // the time the invocation was scheduled for
+    Trigger       TriggerKind // what started it
+}
+```
+
+| `Trigger` | Started by | `ScheduledTime` |
+|-----------|------------|-----------------|
+| `TriggerScheduled` | a fire of the schedule | the schedule's time, not the start time |
+| `TriggerManual` | `TriggerEntry`, `TriggerEntryByName` | the time of the call |
+| `TriggerCatchUp` | the entry's `MissedPolicy` | the missed scheduled time |
+| `TriggerDependency` | a workflow parent reaching its condition | the time the child was started |
+
+A manual trigger of a workflow root carries `TriggerManual`; the children it
+starts carry `TriggerDependency`. The zero `TriggerKind` is not a valid kind;
+`TriggerKind.Valid` reports whether a value is one of the four. See
+[ADR-023](adr/ADR-023-run-info-in-context.md).
+
+**Example:**
+```go
+c.AddJob("0 2 * * *", cron.FuncJobWithContext(func(ctx context.Context) {
+    if info, ok := cron.RunInfoFromContext(ctx); ok && info.Trigger == cron.TriggerScheduled {
+        log.Printf("nightly run for %s", info.ScheduledTime.Format(time.RFC3339))
+    }
+}), cron.WithName("nightly"))
 ```
 
 ### Schedule Introspection

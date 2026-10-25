@@ -175,7 +175,7 @@ func (c *Cron) handleMissedRuns(e *Entry, missed []time.Time) {
 			"scheduledTime", lastMissed,
 			"missedCount", len(missed),
 		)
-		c.startJob(e.entryCtx, e.running, e.ID, e.Job, e.WrappedJob, lastMissed)
+		c.startJob(e.entryCtx, e.running, e.ID, e.Job, e.WrappedJob, lastMissed, TriggerCatchUp)
 		// Update Prev to prevent duplicate catch-ups on restart
 		e.Prev = lastMissed
 
@@ -187,7 +187,7 @@ func (c *Cron) handleMissedRuns(e *Entry, missed []time.Time) {
 			"count", len(missed),
 		)
 		for _, scheduledTime := range missed {
-			c.startJob(e.entryCtx, e.running, e.ID, e.Job, e.WrappedJob, scheduledTime)
+			c.startJob(e.entryCtx, e.running, e.ID, e.Job, e.WrappedJob, scheduledTime, TriggerCatchUp)
 		}
 		// Update Prev to the most recent catch-up time
 		e.Prev = missed[len(missed)-1]

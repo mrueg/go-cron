@@ -69,7 +69,7 @@ type Cron struct {
 	chain       Chain
 	stop        chan struct{}
 	add         chan request[scheduleJobRequest, scheduleJobResponse]
-	remove      chan request[EntryID, struct{}]
+	remove      chan request[EntryID, *jobTracker]
 	update      chan request[updateScheduleRequest, error]
 	pause       chan request[pauseRequest, error]
 	trigger     chan request[EntryID, error]
@@ -458,6 +458,23 @@ func (t *jobTracker) wait() {
 	}
 }
 
+// waitContext is wait bounded by ctx. It returns ctx.Err() if ctx is done
+// before the in-flight executions have finished, nil otherwise.
+func (t *jobTracker) waitContext(ctx context.Context) error {
+	t.mu.Lock()
+	ch := t.done // nil if idle
+	t.mu.Unlock()
+	if ch == nil {
+		return nil
+	}
+	select {
+	case <-ch:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // Valid returns true if this is not the zero entry.
 func (e Entry) Valid() bool { return e.ID != 0 }
 
@@ -500,7 +517,7 @@ func New(opts ...Option) *Cron {
 		snapshot:             make(chan chan []Entry),
 		entryLookup:          make(chan entryLookupRequest),
 		nameLookup:           make(chan nameLookupRequest),
-		remove:               make(chan request[EntryID, struct{}]),
+		remove:               make(chan request[EntryID, *jobTracker]),
 		update:               make(chan request[updateScheduleRequest, error]),
 		pause:                make(chan request[pauseRequest, error]),
 		trigger:              make(chan request[EntryID, error]),
@@ -1007,15 +1024,61 @@ func (c *Cron) Entry(id EntryID) Entry {
 
 // Remove an entry from being run in the future.
 func (c *Cron) Remove(id EntryID) {
+	c.removeTracked(id)
+}
+
+// removeTracked removes the entry and returns its job tracker, or nil if no
+// entry has the given ID. The tracker is taken in the same step that removes
+// the entry, so it covers every invocation that started before the removal;
+// no invocation of the entry can start after it.
+func (c *Cron) removeTracked(id EntryID) *jobTracker {
 	c.runningMu.Lock()
 	defer c.runningMu.Unlock()
 	if c.running {
-		req := makeReq[EntryID, struct{}](id)
+		req := makeReq[EntryID, *jobTracker](id)
 		c.remove <- req
-		<-req.reply
-	} else {
-		c.removeEntry(id)
+		return <-req.reply
 	}
+	return c.removeEntry(id)
+}
+
+// RemoveAndWait removes the entry with the given ID and blocks until every
+// invocation of it that was in flight at the removal has returned, or until
+// ctx is done.
+//
+// Removing the entry cancels its per-entry context, so a job that implements
+// JobWithContext sees the cancellation and can stop early. The wait happens
+// outside the run loop and holds no lock, so other entries keep running.
+//
+// Returns ErrEntryNotFound if no entry has the given ID, ctx.Err() if ctx is
+// done before the invocations have returned (the entry is removed either way),
+// and nil otherwise.
+//
+//	if err := cr.RemoveAndWait(ctx, id); err != nil && !errors.Is(err, cron.ErrEntryNotFound) {
+//	    // an invocation is still running after ctx expired
+//	}
+func (c *Cron) RemoveAndWait(ctx context.Context, id EntryID) error {
+	tracker := c.removeTracked(id)
+	if tracker == nil {
+		return ErrEntryNotFound
+	}
+	return tracker.waitContext(ctx)
+}
+
+// RemoveByNameAndWait is the named variant of RemoveAndWait. It removes the
+// entry with the given name and blocks until every invocation of it that was
+// in flight at the removal has returned, or until ctx is done.
+//
+// Unlike RemoveByName followed by WaitForJobByName, it can wait: the removal
+// deletes the name, so a lookup by name afterwards no longer finds the entry.
+//
+// Returns ErrEntryNotFound if no entry has the given name.
+func (c *Cron) RemoveByNameAndWait(ctx context.Context, name string) error {
+	entry := c.EntryByName(name)
+	if !entry.Valid() {
+		return ErrEntryNotFound
+	}
+	return c.RemoveAndWait(ctx, entry.ID)
 }
 
 // Start the cron scheduler in its own goroutine, or no-op if already started.
@@ -1175,9 +1238,9 @@ func (c *Cron) processDueEntries(now time.Time) {
 
 		// If this entry has dependents, start a workflow execution.
 		if len(c.parentToChildren[e.ID]) > 0 {
-			c.startWorkflowExecution(e, scheduledTime)
+			c.startWorkflowExecution(e, scheduledTime, TriggerScheduled)
 		} else {
-			c.startJob(e.entryCtx, e.running, e.ID, e.Job, e.WrappedJob, scheduledTime)
+			c.startJob(e.entryCtx, e.running, e.ID, e.Job, e.WrappedJob, scheduledTime, TriggerScheduled)
 		}
 		e.Prev = e.Next
 		c.postDispatchScheduled(e, now)
@@ -1272,8 +1335,7 @@ func (c *Cron) run() {
 				id := req.value
 				timer.Stop()
 				now = c.now()
-				c.removeEntry(id)
-				req.reply <- struct{}{}
+				req.reply <- c.removeEntry(id)
 				c.logger.Info("removed", "entry", id)
 
 			case req := <-c.update:
@@ -1359,17 +1421,17 @@ func (c *Cron) run() {
 // per-entry context, allowing the job to receive cancellation signals when the entry
 // is removed, its job is replaced, or Stop() is called (which cancels baseCtx,
 // cascading to all entry contexts).
-func (c *Cron) startJob(entryCtx context.Context, entryRunning *jobTracker, entryID EntryID, originalJob, wrappedJob Job, scheduledTime time.Time) {
-	c.startJobWithExecution(entryCtx, entryRunning, entryID, originalJob, wrappedJob, scheduledTime, "")
+func (c *Cron) startJob(entryCtx context.Context, entryRunning *jobTracker, entryID EntryID, originalJob, wrappedJob Job, scheduledTime time.Time, trigger TriggerKind) {
+	c.startJobWithExecution(entryCtx, entryRunning, entryID, originalJob, wrappedJob, scheduledTime, trigger, "")
 }
 
-func (c *Cron) startJobWithExecution(entryCtx context.Context, entryRunning *jobTracker, entryID EntryID, originalJob, wrappedJob Job, scheduledTime time.Time, executionID string) {
+func (c *Cron) startJobWithExecution(entryCtx context.Context, entryRunning *jobTracker, entryID EntryID, originalJob, wrappedJob Job, scheduledTime time.Time, trigger TriggerKind, executionID string) {
 	c.jobWaiter.Add(1)
 	entryRunning.start()
 
-	runCtx := entryCtx
+	runCtx := context.WithValue(entryCtx, runInfoContextKey{}, RunInfo{ScheduledTime: scheduledTime, Trigger: trigger})
 	if executionID != "" {
-		runCtx = context.WithValue(entryCtx, workflowContextKey{}, executionID)
+		runCtx = context.WithValue(runCtx, workflowContextKey{}, executionID)
 	}
 
 	go func() {
@@ -1495,7 +1557,7 @@ func (c *Cron) triggerWorkflowChild(exec *WorkflowExecution, childID EntryID) {
 	}
 
 	now := c.now()
-	c.startJobWithExecution(entry.entryCtx, entry.running, entry.ID, entry.Job, entry.WrappedJob, now, exec.ID)
+	c.startJobWithExecution(entry.entryCtx, entry.running, entry.ID, entry.Job, entry.WrappedJob, now, TriggerDependency, exec.ID)
 	entry.Prev = now
 }
 
@@ -1513,7 +1575,7 @@ func (c *Cron) completeWorkflowExecution(exec *WorkflowExecution) {
 }
 
 // startWorkflowExecution creates a new WorkflowExecution for a root entry.
-func (c *Cron) startWorkflowExecution(entry *Entry, scheduledTime time.Time) {
+func (c *Cron) startWorkflowExecution(entry *Entry, scheduledTime time.Time, trigger TriggerKind) {
 	execID := generateExecutionID()
 	participants := c.collectWorkflowParticipants(entry.ID)
 
@@ -1528,7 +1590,7 @@ func (c *Cron) startWorkflowExecution(entry *Entry, scheduledTime time.Time) {
 	}
 
 	c.activeExecutions[execID] = exec
-	c.startJobWithExecution(entry.entryCtx, entry.running, entry.ID, entry.Job, entry.WrappedJob, scheduledTime, execID)
+	c.startJobWithExecution(entry.entryCtx, entry.running, entry.ID, entry.Job, entry.WrappedJob, scheduledTime, trigger, execID)
 }
 
 // collectWorkflowParticipants returns all entry IDs reachable from rootID via parentToChildren (BFS).
@@ -1826,9 +1888,9 @@ func (c *Cron) triggerEntry(id EntryID) error {
 
 	// If this entry has dependents, start a workflow execution.
 	if len(c.parentToChildren[entry.ID]) > 0 {
-		c.startWorkflowExecution(entry, now)
+		c.startWorkflowExecution(entry, now, TriggerManual)
 	} else {
-		c.startJob(entry.entryCtx, entry.running, entry.ID, entry.Job, entry.WrappedJob, now)
+		c.startJob(entry.entryCtx, entry.running, entry.ID, entry.Job, entry.WrappedJob, now, TriggerManual)
 	}
 	entry.Prev = now
 	c.postDispatchTriggered(entry, now)
@@ -2183,10 +2245,10 @@ func (c *Cron) tryIncrementEntryCount() bool {
 //
 // This avoids a deadlock where ScheduleJob holds runningMu while sending to c.add,
 // and a concurrent run-once job completion tries to acquire runningMu here.
-func (c *Cron) removeEntry(id EntryID) {
+func (c *Cron) removeEntry(id EntryID) *jobTracker {
 	entry, ok := c.entryIndex[id]
 	if !ok {
-		return
+		return nil
 	}
 
 	// Cancel the per-entry context to signal running jobs for this entry.
@@ -2238,6 +2300,7 @@ func (c *Cron) removeEntry(id EntryID) {
 	// Go maps don't release memory on delete, so we rebuild periodically.
 	c.indexDeletions++
 	c.maybeCompactIndexes()
+	return entry.running
 }
 
 // indexCompactionThreshold is the minimum number of deletions before considering compaction.
