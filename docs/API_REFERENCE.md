@@ -15,6 +15,7 @@
   - [ScheduleWithPrev](#schedulewithprev)
   - [SpecSchedule](#specschedule)
   - [ConstantDelaySchedule](#constantdelayschedule)
+  - [UnionSchedule](#unionschedule)
   - [Parser](#parser)
   - [ParseOption](#parseoption)
   - [Chain](#chain)
@@ -1762,6 +1763,47 @@ func (s ConstantDelaySchedule) Next(t time.Time) time.Time
 ```
 
 Next returns the next activation time after t.
+
+---
+
+### UnionSchedule
+
+```go
+type UnionSchedule struct {
+    Schedules []Schedule
+}
+```
+
+UnionSchedule fires at every time at which any of its schedules fires. A time that several schedules share fires once, so a job that needs more than one cron expression runs once per distinct time.
+
+A schedule that returns the zero time is exhausted and no longer contributes; the union is exhausted only when all of its schedules are. `Prev` returns the latest earlier time of all schedules, or the zero time if one of them does not implement `ScheduleWithPrev`.
+
+When all `CRON_TZ=`/`TZ=` specs in the union name the same zone, the scheduler suppresses the repeated hour on DST fall-back days in that zone, as it does for a single spec. Specs in different zones fall back to the scheduler's location for that check.
+
+#### func Union
+
+```go
+func Union(schedules ...Schedule) (*UnionSchedule, error)
+```
+
+Union returns the union of the given schedules. It returns `ErrEmptyUnion` for no schedule and an error for a nil one.
+
+#### func ParseUnion
+
+```go
+func ParseUnion(p ScheduleParser, specs ...string) (*UnionSchedule, error)
+```
+
+ParseUnion parses each spec with p and returns their union. The error names the spec that failed.
+
+**Example:**
+```go
+u, err := cron.ParseUnion(cron.StandardParser(), "0 9 * * MON-FRI", "0 11 * * SAT,SUN")
+if err != nil {
+    return err
+}
+c.ScheduleJob(u, job, cron.WithName("report"))
+```
 
 ---
 

@@ -1137,10 +1137,11 @@ func (c *Cron) scheduleEntryNext(entry *Entry, now time.Time) {
 // scheduleLocation returns the effective timezone for a schedule.
 // When a schedule has an explicit TZ= override (ss.Location is a named timezone,
 // not the time.Local sentinel set by the parser for specs without TZ=), use it.
-// Otherwise fall back to the cron instance's configured location.
+// Otherwise fall back to the cron instance's configured location. A
+// UnionSchedule counts as having an override when its specs agree on one.
 func (c *Cron) scheduleLocation(sched Schedule) *time.Location {
-	if ss, ok := sched.(*SpecSchedule); ok && ss.Location != nil && ss.Location != time.Local {
-		return ss.Location
+	if loc := specLocation(sched); loc != nil {
+		return loc
 	}
 	return c.location
 }
