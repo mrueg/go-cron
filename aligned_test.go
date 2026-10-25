@@ -33,6 +33,19 @@ func TestAlignedScheduleNextPrev(t *testing.T) {
 			"before 1970", time.Date(1969, 12, 31, 23, 30, 0, 0, time.UTC),
 			time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(1969, 12, 31, 23, 0, 0, 0, time.UTC),
 		},
+		{
+			"with nanoseconds", time.Date(2026, 10, 26, 10, 17, 0, 500, time.UTC),
+			time.Date(2026, 10, 26, 11, 0, 0, 0, time.UTC), time.Date(2026, 10, 26, 10, 0, 0, 0, time.UTC),
+		},
+		// Outside the int64 nanosecond range of UnixNano (1678-2262).
+		{
+			"year 3000", time.Date(3000, 6, 1, 10, 17, 0, 0, time.UTC),
+			time.Date(3000, 6, 1, 11, 0, 0, 0, time.UTC), time.Date(3000, 6, 1, 10, 0, 0, 0, time.UTC),
+		},
+		{
+			"year 1500", time.Date(1500, 6, 1, 10, 17, 0, 0, time.UTC),
+			time.Date(1500, 6, 1, 11, 0, 0, 0, time.UTC), time.Date(1500, 6, 1, 10, 0, 0, 0, time.UTC),
+		},
 	} {
 		if got := s.Next(tc.at); !got.Equal(tc.next) {
 			t.Errorf("%s: Next = %v, want %v", tc.name, got, tc.next)
@@ -115,8 +128,11 @@ func TestParseEveryDescriptors(t *testing.T) {
 			t.Errorf("Parse(%q) returned no error", bad)
 		}
 	}
-	if got := AnalyzeSpec("@every_aligned 90s").Interval; got != 90*time.Second {
-		t.Errorf("AnalyzeSpec(@every_aligned 90s).Interval = %v, want 1m30s", got)
+	// AnalyzeSpec reports the interval the scheduler uses, after rounding.
+	for _, spec := range []string{"@every_aligned 90.4s", "@every_start 90.4s", "@every 90.4s"} {
+		if got := AnalyzeSpec(spec).Interval; got != 90*time.Second {
+			t.Errorf("AnalyzeSpec(%q).Interval = %v, want 1m30s", spec, got)
+		}
 	}
 }
 

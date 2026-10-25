@@ -3,7 +3,10 @@
 
 package cron
 
-import "time"
+import (
+	"math/bits"
+	"time"
+)
 
 // AlignedSchedule fires at the multiples of Interval since the Unix epoch,
 // 1970-01-01 00:00:00 UTC. Every scheduler that runs it computes the same
@@ -37,28 +40,42 @@ func EveryAlignedWithMin(d, minInterval time.Duration) AlignedSchedule {
 // Interval is zero or negative, it returns t plus one second, as
 // ConstantDelaySchedule does, to keep the scheduler from spinning.
 func (s AlignedSchedule) Next(t time.Time) time.Time {
-	d := int64(s.Interval)
-	if d <= 0 {
+	if s.Interval <= 0 {
 		return t.Add(time.Second)
 	}
-	return time.Unix(0, (floorDiv(t.UnixNano(), d)+1)*d).In(t.Location())
+	return t.Add(s.Interval - gridOffset(t, s.Interval))
 }
 
 // Prev returns the last multiple of Interval before t, in t's location.
 func (s AlignedSchedule) Prev(t time.Time) time.Time {
-	d := int64(s.Interval)
-	if d <= 0 {
+	if s.Interval <= 0 {
 		return t.Add(-time.Second)
 	}
-	return time.Unix(0, floorDiv(t.UnixNano()-1, d)*d).In(t.Location())
+	off := gridOffset(t, s.Interval)
+	if off == 0 {
+		off = s.Interval
+	}
+	return t.Add(-off)
 }
 
-// floorDiv divides rounding toward negative infinity, so times before 1970
-// fall on the same grid.
-func floorDiv(a, b int64) int64 {
-	q := a / b
-	if a%b != 0 && (a < 0) != (b < 0) {
-		q--
+// gridOffset returns how far t lies past the last multiple of d since the
+// Unix epoch, in [0, d). It works on seconds and nanoseconds separately, so
+// times outside the int64 nanosecond range of UnixNano (before 1678 or after
+// 2262) still fall on the grid.
+func gridOffset(t time.Time, d time.Duration) time.Duration {
+	n := uint64(d)
+	secRem := floorMod(t.Unix(), int64(n))
+	hi, lo := bits.Mul64(uint64(secRem), uint64(time.Second)%n)
+	rem := bits.Rem64(hi, lo, n)
+	rem = (rem + uint64(t.Nanosecond())%n) % n
+	return time.Duration(rem)
+}
+
+// floorMod returns a mod b in [0, b) for b > 0, also for negative a.
+func floorMod(a, b int64) int64 {
+	m := a % b
+	if m < 0 {
+		m += b
 	}
-	return q
+	return m
 }

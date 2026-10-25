@@ -155,10 +155,10 @@ func dedupKey(name string, scheduled time.Time) string {
 // be longer than the largest clock difference between the instances; a
 // longer ttl only keeps the key in the store longer. All instances must
 // compute the same scheduled times, so they need the same spec and the same
-// time zone (CRON_TZ= in the spec, or the same WithLocation). An @every
-// schedule counts from each instance's own start, so instances never share
-// its times and every instance runs; use @every_aligned or a cron
-// expression instead.
+// time zone (CRON_TZ= in the spec, or the same WithLocation). By default an
+// @every schedule counts from each instance's own start, so instances never
+// share its times and every instance runs; use @every_aligned, the
+// AlignEvery parse option, or a cron expression instead.
 //
 // A skipped run counts as ResultSkipped in a workflow, so dependents of a
 // workflow parent run only on the instance that ran the parent.

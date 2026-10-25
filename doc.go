@@ -323,9 +323,11 @@ Spring Forward (clocks skip an hour):
   - Jobs scheduled exactly at the transition boundary may run immediately
 
 Fall Back (clocks repeat an hour):
-  - Jobs run only during the first occurrence of the repeated hour
+  - Jobs on a cron expression run only during the first occurrence of the repeated hour
   - The second occurrence is skipped to prevent duplicate runs
   - ⚠️ Note: This means jobs scheduled in the repeated hour run once, not twice
+  - Intervals (@every, @every_start, @every_aligned) count elapsed time and run
+    in both occurrences
 
 Midnight Doesn't Exist:
   - Some DST transitions skip midnight entirely (e.g., São Paulo, Brazil)
