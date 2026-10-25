@@ -240,8 +240,9 @@ type Schedule interface {
 // to support backward time traversal. This is useful for detecting missed
 // executions or determining the last scheduled run time.
 //
-// Built-in schedules (SpecSchedule, ConstantDelaySchedule) implement this
-// interface. Custom Schedule implementations may optionally implement it.
+// Built-in schedules (SpecSchedule, ConstantDelaySchedule, AlignedSchedule,
+// UnionSchedule, TriggeredSchedule) implement this interface. Custom
+// Schedule implementations may optionally implement it.
 //
 // Use type assertion to check for support:
 //

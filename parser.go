@@ -785,7 +785,8 @@ var fullParser = NewParser(
 //   - Standard 5-field cron: minute, hour, day-of-month, month, day-of-week
 //   - Optional seconds prefix (6 fields): second, minute, hour, dom, month, dow
 //   - Optional year suffix (7 fields with seconds, 6 without)
-//   - Descriptors: @yearly, @monthly, @weekly, @daily, @hourly, @every <duration>
+//   - Descriptors: @yearly, @monthly, @weekly, @daily, @hourly, @every <duration>,
+//     @every_aligned <duration>, @every_start <duration>, @triggered
 //   - Hash expressions: H for load-distributed scheduling
 //   - Extended syntax: FRI#3 (3rd Friday), MON#L (last Monday), L (last day), 15W (nearest weekday)
 //

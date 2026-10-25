@@ -164,24 +164,51 @@ func TestAlignedEveryDeduplicatesAcrossInstances(t *testing.T) {
 	}
 }
 
-// One hour after 01:00 EDT is 01:00 EST; @every_aligned 1h runs both.
-func TestDSTFallBack_AlignedEveryKeepsRegularRun(t *testing.T) {
+// One hour after 01:00 EDT is 01:00 EST; an interval runs both. The guard
+// exemption covers the value and the pointer form of both interval types.
+func TestDSTFallBack_IntervalsKeepRegularRun(t *testing.T) {
 	loc, err := time.LoadLocation("America/New_York")
 	if err != nil {
 		t.Skip("America/New_York timezone not available")
 	}
-	clock := NewFakeClock(time.Date(2026, 11, 1, 0, 30, 0, 0, loc).UTC())
-	c := New(WithClock(clock), WithLocation(loc))
-	var runs atomic.Int32
-	if _, err := c.AddFunc("@every_aligned 1h", func() { runs.Add(1) }); err != nil {
+	start := time.Date(2026, 11, 1, 0, 30, 0, 0, loc).UTC()
+	aligned := AlignedSchedule{Interval: time.Hour}
+	every := Every(time.Hour)
+	for name, sched := range map[string]Schedule{
+		"AlignedSchedule":        aligned,
+		"*AlignedSchedule":       &aligned,
+		"*ConstantDelaySchedule": &every,
+	} {
+		t.Run(name, func(t *testing.T) {
+			clock := NewFakeClock(start)
+			c := New(WithClock(clock), WithLocation(loc))
+			var runs atomic.Int32
+			c.Schedule(sched, FuncJob(func() { runs.Add(1) }))
+			c.Start()
+			defer c.Stop()
+			for i := range 3 { // 01:00 EDT, 01:00 EST, 02:00 EST (aligned) or 01:30 EDT, 01:30 EST, 02:30 EST
+				clock.BlockUntil(1)
+				clock.Advance(time.Hour)
+				waitUntil(t, "the next hourly run", func() bool { return runs.Load() == int32(i+1) })
+			}
+		})
+	}
+}
+
+// A parser's minimum interval applies to @every_aligned as to @every.
+func TestParseEveryAlignedMinInterval(t *testing.T) {
+	t.Parallel()
+	p := NewParser(Minute | Hour | Dom | Month | Dow | Descriptor).WithMinEveryInterval(time.Minute)
+	if _, err := p.Parse("@every_aligned 30s"); err == nil {
+		t.Error("@every_aligned 30s with a 1m minimum: no error")
+	}
+	sub := NewParser(Minute | Hour | Dom | Month | Dow | Descriptor).WithMinEveryInterval(100 * time.Millisecond)
+	s, err := sub.Parse("@every_aligned 300ms")
+	if err != nil {
 		t.Fatal(err)
 	}
-	c.Start()
-	defer c.Stop()
-	for i := range 3 { // 01:00 EDT, 01:00 EST, 02:00 EST
-		clock.BlockUntil(1)
-		clock.Advance(time.Hour)
-		waitUntil(t, "the next hourly run", func() bool { return runs.Load() == int32(i+1) })
+	if got := s.(AlignedSchedule).Interval; got != 300*time.Millisecond {
+		t.Errorf("@every_aligned 300ms with a 100ms minimum: Interval = %v, want 300ms", got)
 	}
 }
 

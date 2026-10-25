@@ -143,6 +143,7 @@ import (
 | `heap.go` | Min-heap implementation for entry scheduling |
 | `missed.go` | `WithMissedPolicy` for catch-up of missed jobs |
 | `constantdelay.go` | `ConstantDelaySchedule` for `@every` intervals |
+| `aligned.go` | `AlignedSchedule` for `@every_aligned` (and `@every` with `AlignEvery`) |
 | `workflow.go` | DAG execution engine with cascade skip logic (#312) |
 | `triggered.go` | `TriggeredSchedule` for `@triggered`/`@manual`/`@none` on-demand jobs |
 | `doc.go` | Package documentation and cron expression syntax |

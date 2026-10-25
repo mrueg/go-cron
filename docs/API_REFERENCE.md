@@ -16,6 +16,7 @@
   - [SpecSchedule](#specschedule)
   - [ConstantDelaySchedule](#constantdelayschedule)
   - [UnionSchedule](#unionschedule)
+  - [AlignedSchedule](#alignedschedule)
   - [Parser](#parser)
   - [ParseOption](#parseoption)
   - [Chain](#chain)
@@ -1681,7 +1682,7 @@ ScheduleWithPrev is an optional interface that schedules can implement to suppor
 backward time traversal. This is useful for detecting missed executions or
 determining the last scheduled run time.
 
-Built-in schedules (`SpecSchedule`, `ConstantDelaySchedule`) implement this interface.
+Built-in schedules (`SpecSchedule`, `ConstantDelaySchedule`, `AlignedSchedule`, `UnionSchedule`, `TriggeredSchedule`) implement this interface.
 Custom Schedule implementations may optionally implement it.
 
 **Usage:**

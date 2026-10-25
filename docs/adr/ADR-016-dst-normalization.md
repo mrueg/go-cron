@@ -3,6 +3,11 @@
 ## Status
 Accepted
 
+**Update 2026-10-25:** [ADR-026](ADR-026-aligned-intervals.md) exempts
+`@every` intervals (`ConstantDelaySchedule`, `AlignedSchedule`) from the
+fall-back deduplication below: one interval after 01:30 EDT is 01:30 EST, a
+regular run.
+
 ## Date
 2025-12-14
 
@@ -66,7 +71,7 @@ The scheduler enforces this rule, not the schedule: `Schedule.Next()` returns bo
 
 - **ISC cron compatible**: Matches expected Unix cron behavior
 - **No skipped jobs**: Spring-forward jobs still run
-- **No duplicate runs**: Fall-back jobs run exactly once
+- **No duplicate runs**: Fall-back jobs on a cron expression run exactly once
 - **Predictable**: Users can rely on jobs running once per schedule
 
 ### Negative
@@ -233,8 +238,9 @@ All BSD and Linux man pages agree:
 
 Our implementation aligns with Quartz and is stricter than Vixie cron: while Vixie
 cron distinguishes wildcard-hour jobs (e.g., `0 * * * *`, runs both occurrences) from
-fixed-time jobs (e.g., `30 1 * * *`, runs once), we deduplicate **any** job that
-fires at the same wall-clock time. This means hourly jobs like `0 * * * *` run once
+fixed-time jobs (e.g., `30 1 * * *`, runs once), we deduplicate **any** cron-expression
+job that fires at the same wall-clock time; `@every` intervals are exempt
+([ADR-026](ADR-026-aligned-intervals.md)). This means hourly jobs like `0 * * * *` run once
 during fall-back (not twice as in Vixie cron). Jobs that fire every minute (e.g.,
 `* * * * *`) are unaffected because their wall-clock times differ each tick.
 
