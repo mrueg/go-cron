@@ -833,6 +833,77 @@ func TestDayMatchesORMode(t *testing.T) {
 	}
 }
 
+// TestStepWildcard verifies that StepWildcard keeps a stepped star in
+// a day field unrestricted, so DowOrDom ANDs the two day fields as Vixie cron does.
+func TestStepWildcard(t *testing.T) {
+	vixie := NewParser(Minute | Hour | Dom | Month | Dow | DowOrDom | StepWildcard)
+	legacy := NewParser(Minute | Hour | Dom | Month | Dow | DowOrDom)
+
+	tests := []struct {
+		name   string
+		spec   string
+		time   string
+		vixie  bool
+		legacy bool
+	}{
+		{"stepped DOM, odd Monday", "0 0 */2 * Mon", "Mon Aug 3 00:00 2026", true, true},
+		{"stepped DOM, odd Wednesday", "0 0 */2 * Mon", "Wed Aug 5 00:00 2026", false, true},
+		{"stepped DOM, even Monday", "0 0 */2 * Mon", "Mon Aug 10 00:00 2026", false, true},
+		{"question mark alias", "0 0 ?/2 * Mon", "Wed Aug 5 00:00 2026", false, true},
+		{"stepped DOW, first of month on Tuesday", "0 0 1 * */2", "Tue Sep 1 00:00 2026", true, true},
+		{"stepped DOW, Tuesday that is not the first", "0 0 1 * */2", "Tue Aug 4 00:00 2026", false, true},
+		{"both restricted still ORs", "0 0 15 * Sun", "Sun Aug 2 00:00 2026", true, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, p := range []struct {
+				name   string
+				parser Parser
+				want   bool
+			}{{"StepWildcard", vixie, tc.vixie}, {"DowOrDom only", legacy, tc.legacy}} {
+				sched, err := p.parser.Parse(tc.spec)
+				if err != nil {
+					t.Fatal(err)
+				}
+				tm := getTime(tc.time)
+				if got := sched.Next(tm.Add(-time.Second)).Equal(tm); got != p.want {
+					t.Errorf("%s: spec %q at %s: got match=%v, want %v", p.name, tc.spec, tc.time, got, p.want)
+				}
+			}
+		})
+	}
+}
+
+// TestStepWildcardWithoutDowOrDom verifies that StepWildcard alone changes
+// nothing: both day fields stay ANDed, and AnalyzeSpec still warns about it.
+func TestStepWildcardWithoutDowOrDom(t *testing.T) {
+	opts := Minute | Hour | Dom | Month | Dow
+	spec := "0 0 */2 * MON"
+
+	withOpt := AnalyzeSpec(spec, opts|StepWildcard)
+	without := AnalyzeSpec(spec, opts)
+	if !withOpt.Valid || !without.Valid {
+		t.Fatalf("spec %q should be valid: %v / %v", spec, withOpt.Error, without.Error)
+	}
+	if len(without.Warnings) == 0 {
+		t.Fatalf("AnalyzeSpec(%q) without StepWildcard returned no warning, want the AND-logic warning", spec)
+	}
+	if !slices.Equal(withOpt.Warnings, without.Warnings) {
+		t.Errorf("StepWildcard without DowOrDom changed the warnings: got %q, want %q", withOpt.Warnings, without.Warnings)
+	}
+
+	sched, err := NewParser(opts | StepWildcard).Parse(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Wed Aug 5 2026 is an odd day but no Monday: AND logic must not match it.
+	tm := getTime("Wed Aug 5 00:00 2026")
+	if sched.Next(tm.Add(-time.Second)).Equal(tm) {
+		t.Errorf("StepWildcard without DowOrDom matched %s, want AND logic", tm)
+	}
+}
+
 // TestDowOrDomParseOption verifies the DowOrDom ParseOption is correctly applied.
 func TestDowOrDomParseOption(t *testing.T) {
 	// Default parser (AND mode)

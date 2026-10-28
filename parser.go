@@ -42,6 +42,7 @@ const (
 	AlignEvery                             // Plain @every fires on the epoch grid, like @every_aligned (default: counts from start)
 	LenientSteps                           // Accept steps at or above the range size (e.g. */60), as robfig/cron did
 	StrictDays                             // Reject a day of month that occurs in none of the selected months (e.g. Feb 30)
+	StepWildcard                           // With DowOrDom, a stepped star (*/2) in DOM or DOW still counts as a wildcard, as in Vixie cron
 )
 
 // Extended is a convenience flag that enables all extended cron syntax options:
@@ -499,6 +500,15 @@ func (p Parser) parse(spec string) (Schedule, error) {
 		return nil, dowErr
 	}
 
+	// Vixie cron marks a day field as unrestricted whenever it starts with '*',
+	// step or not, so "0 0 */2 * 1" is odd days that are also Mondays.
+	// Without DowOrDom both day fields are ANDed anyway; setting the bit there
+	// would only hide the AND-logic warning of AnalyzeSpec.
+	if p.options&StepWildcard != 0 && p.options&DowOrDom != 0 {
+		dayofmonth |= wildcardBit(fields[3])
+		dayofweek |= wildcardBit(fields[5])
+	}
+
 	// Parse year field if Year or YearOptional option is enabled
 	var yearSet map[int]struct{} // nil = wildcard (any year)
 	if (p.options&Year > 0 || p.options&YearOptional > 0) && yearField != "" {
@@ -563,6 +573,14 @@ func dayNeverMatches(dom, month, dow uint64, domConstraints []DomConstraint, dow
 		}
 	}
 	return true
+}
+
+// wildcardBit returns starBit if field starts with a wildcard ('*' or '?').
+func wildcardBit(field string) uint64 {
+	if strings.HasPrefix(field, "*") || strings.HasPrefix(field, "?") {
+		return starBit
+	}
+	return 0
 }
 
 // parseDomField parses the day-of-month field, handling extended L/W syntax if enabled.
