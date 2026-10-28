@@ -1168,6 +1168,14 @@ func validateRangeParams(start, end, step uint, r bounds, expr string) error {
 	if start < r.min {
 		return fmt.Errorf("beginning of range (%d) below minimum (%d): %q", start, r.min, expr)
 	}
+	// A wraparound range (start > end) needs both ends checked against both
+	// bounds: 61-1 would otherwise pass and underflow the range size below.
+	if start > r.max {
+		return fmt.Errorf("beginning of range (%d) above maximum (%d): %q", start, r.max, expr)
+	}
+	if end < r.min {
+		return fmt.Errorf("end of range (%d) below minimum (%d): %q", end, r.min, expr)
+	}
 	if end > r.max {
 		return fmt.Errorf("end of range (%d) above maximum (%d): %q", end, r.max, expr)
 	}

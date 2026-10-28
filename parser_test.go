@@ -2392,6 +2392,34 @@ func TestParserWithCacheStoresErrors(t *testing.T) {
 	}
 }
 
+// TestWraparoundRangeOutOfBounds verifies that a range whose start lies above
+// the field maximum is rejected, wraparound or not, and with or without
+// LenientSteps. Before, 61-1 passed and 61-0/2 failed only by an underflow.
+func TestWraparoundRangeOutOfBounds(t *testing.T) {
+	opts := Minute | Hour | Dom | Month | Dow
+	for _, spec := range []string{
+		"61-1 * * * *",
+		"61-0 * * * *",
+		"61-0/2 * * * *",
+		"0 25-1 * * *",
+	} {
+		for _, p := range []Parser{NewParser(opts), NewParser(opts | LenientSteps)} {
+			_, err := p.Parse(spec)
+			if err == nil {
+				t.Errorf("Parse(%q) with options %b accepted an out-of-range start", spec, p.options)
+				continue
+			}
+			if !strings.Contains(err.Error(), "above maximum") {
+				t.Errorf("Parse(%q): got %v, want an \"above maximum\" error", spec, err)
+			}
+		}
+	}
+	// A valid wraparound range still parses.
+	if _, err := NewParser(opts).Parse("0 22-2 * * *"); err != nil {
+		t.Errorf("Parse(\"0 22-2 * * *\"): %v", err)
+	}
+}
+
 // TestLenientSteps verifies that the LenientSteps option accepts steps at or
 // above the range size and selects only the range start, as robfig/cron did.
 func TestLenientSteps(t *testing.T) {
