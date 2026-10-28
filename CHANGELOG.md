@@ -9,7 +9,50 @@ Originally based on [robfig/cron](https://github.com/robfig/cron).
 
 ## [Unreleased]
 
+### Planned for v2
+- Context-aware Job interface with graceful shutdown support
+
+## [0.18.0] - 2026-10-28
+
+Feature release. The additions are new API and opt-in parse options; the
+default parser keeps its behaviour except for the fixes below, and the minimum
+Go version stays at 1.26. `SpecSchedule` gains a field, so code that builds a
+`SpecSchedule` with an unkeyed struct literal needs one more value.
+
 ### Added
+- `Union(schedules...)` and `ParseUnion(parser, specs...)` return a
+  `*UnionSchedule` that runs one entry on several cron expressions. A time that
+  two expressions share runs the job once. The DST fall-back guard checks each
+  member in its own zone ([PR#436])
+- `Locker` interface, `NewMemoryLocker(clock)` and the `SkipDuplicateRuns`
+  wrapper. Scheduler instances that share a `Locker` run each scheduled time
+  once: the wrapper reserves `name@<scheduled time in UTC>` before the run and
+  keeps the reservation after it. A locker error skips the run. ADR-025 moves
+  the `Locker` interface into the library; the stores stay in user code
+  ([PR#437])
+- `NewConcurrencyGroups()` with `MaxConcurrent` and `MaxConcurrentSkip` share a
+  concurrency limit by name between jobs that do not share one wrapper value,
+  within one process ([PR#438])
+- `SkipWhileLocked` wrapper: across scheduler instances, a run is skipped while
+  another run holds the same resource name in the shared `Locker`. The key is
+  released when the run ends, also after a panic ([PR#439])
+- `@every_aligned <duration>` runs at every multiple of the duration since
+  1970-01-01 00:00 UTC, so a restart does not delay the job and several
+  instances compute the same times. `@every_start <duration>` counts from the
+  start, as `@every` does by default. The `AlignEvery` parse option makes plain
+  `@every` aligned. New API: `AlignedSchedule`, `EveryAligned`,
+  `EveryAlignedWithMin`. ADR-026 records the decisions ([PR#440])
+- `LenientSteps` parse option accepts steps at or above the range size
+  (`*/60`, `0-5/10`), as robfig/cron and Vixie cron do, and a step on a
+  Sunday-as-7 term (`7/2`). Contributed by [@riki137] ([PR#419])
+- `StrictDays` parse option rejects a day of month that occurs in none of the
+  selected months, such as `0 0 30 2 *`, at parse time instead of returning the
+  zero time from `Next` after a five-year search. Contributed by [@riki137]
+  ([PR#421])
+- `StepWildcard` parse option: with `DowOrDom`, a stepped star (`*/2`) in the
+  day-of-month or day-of-week field still counts as unrestricted, as in Vixie
+  cron and cronie. Without `DowOrDom` it changes nothing. Contributed by
+  [@riki137] ([PR#420])
 - `RobfigCompat` parser option that parses and schedules specs like
   robfig/cron v3. It combines `DowOrDom` with three new options that can also
   be used on their own: `LenientSteps` accepts steps >= the range size (e.g.
@@ -17,11 +60,30 @@ Originally based on [robfig/cron](https://github.com/robfig/cron).
   instead of rejecting them, and `DSTSkip` skips times in a DST spring-forward
   gap instead of running in the hour after it, in both `Next` and `Prev`. Defaults
   are unchanged. `SpecSchedule` gains a `DSTSkip` field, so code that builds a
-  `SpecSchedule` with an unkeyed struct literal needs one more value
-  ([PR#426])
+  `SpecSchedule` with an unkeyed struct literal needs one more value.
+  Contributed by [@mrueg] ([PR#426])
 
-### Planned for v2
-- Context-aware Job interface with graceful shutdown support
+### Fixed
+- `@every 1h` and other intervals no longer lose a regular run on the DST
+  fall-back day. The fall-back guard skipped a next time that showed the
+  previous run's wall-clock time, which for an interval is a regular run: in
+  America/New_York, `@every 1h` was scheduled 2 times instead of 3 across the
+  fall-back hour of 2026-11-01. Intervals are now exempt; calendar specs keep
+  the guard. A union run is skipped only when every member that fires then is a
+  calendar spec that repeats the time ([PR#440])
+- A wraparound range whose start is above the field maximum or whose end is
+  below the field minimum is a parse error. `0 25-1 * * *` and `0 0 5-0 * *`
+  parsed before ([PR#419])
+- `WithMinEveryInterval` with a fractional minimum no longer truncates an
+  interval below that minimum. With a 1500ms minimum, `@every 1700ms` ran every
+  1s; it now runs every 2s, the next whole second above the minimum ([PR#426])
+
+### Documentation
+- `DISTRIBUTED_LOCKING_GUIDE.md` describes `Locker`, `SkipDuplicateRuns` and
+  `SkipWhileLocked`, and explains why a lock named after the job and released
+  after the run does not deduplicate. The PostgreSQL pattern releases its
+  advisory lock on the connection that took it ([PR#439])
+- `docs/API_REFERENCE.md` lists the new parse options ([PR#426])
 
 ## [0.17.0] - 2026-10-25
 
@@ -740,8 +802,19 @@ This fork includes all features from robfig/cron v3 plus:
    _, err := cron.ParseStandard("*/60 * * * *") // Error: step (60) must be less than range size (60)
    ```
 
-[Unreleased]: https://github.com/netresearch/go-cron/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/netresearch/go-cron/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/netresearch/go-cron/compare/v0.17.0...v0.18.0
+[PR#419]: https://github.com/netresearch/go-cron/pull/419
+[PR#420]: https://github.com/netresearch/go-cron/pull/420
+[PR#421]: https://github.com/netresearch/go-cron/pull/421
 [PR#426]: https://github.com/netresearch/go-cron/pull/426
+[PR#436]: https://github.com/netresearch/go-cron/pull/436
+[PR#437]: https://github.com/netresearch/go-cron/pull/437
+[PR#438]: https://github.com/netresearch/go-cron/pull/438
+[PR#439]: https://github.com/netresearch/go-cron/pull/439
+[PR#440]: https://github.com/netresearch/go-cron/pull/440
+[@riki137]: https://github.com/riki137
+[@mrueg]: https://github.com/mrueg
 [0.17.0]: https://github.com/netresearch/go-cron/compare/v0.16.2...v0.17.0
 [#428]: https://github.com/netresearch/go-cron/issues/428
 [PR#429]: https://github.com/netresearch/go-cron/pull/429
