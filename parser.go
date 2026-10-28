@@ -41,6 +41,7 @@ const (
 	DowOrDom                               // Use legacy OR logic for DOW/DOM (default: AND)
 	AlignEvery                             // Plain @every fires on the epoch grid, like @every_aligned (default: counts from start)
 	LenientSteps                           // Accept steps at or above the range size (e.g. */60), as robfig/cron did
+	StrictDays                             // Reject a day of month that occurs in none of the selected months (e.g. Feb 30)
 )
 
 // Extended is a convenience flag that enables all extended cron syntax options:
@@ -511,6 +512,10 @@ func (p Parser) parse(spec string) (Schedule, error) {
 		return nil, err
 	}
 
+	if p.options&StrictDays != 0 && dayNeverMatches(dayofmonth, month, dayofweek, domConstraints, p.options&DowOrDom != 0) {
+		return nil, fmt.Errorf("day of month %q never occurs in month %q", fields[3], fields[4])
+	}
+
 	return &SpecSchedule{
 		Second:         second,
 		Minute:         minute,
@@ -531,6 +536,33 @@ func (p Parser) parse(spec string) (Schedule, error) {
 func (p Parser) fieldBounds(r bounds) bounds {
 	r.lenientSteps = p.options&LenientSteps != 0
 	return r
+}
+
+// maxDaysInMonth is the most days each month can have, counting February's leap day.
+var maxDaysInMonth = [13]uint{0, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}
+
+// dayNeverMatches reports whether a schedule can never match a day: none of its
+// days of month exist in any of its months, and day-of-week can't stand in for
+// them because the two fields are ANDed. The year field is not considered, so
+// Feb 29 is accepted even when no selected year is a leap year.
+func dayNeverMatches(dom, month, dow uint64, domConstraints []DomConstraint, dowOrDom bool) bool {
+	if len(domConstraints) > 0 {
+		return false
+	}
+	if dowOrDom && dom&starBit == 0 && dow&starBit == 0 {
+		return false // OR logic: day-of-week alone can match
+	}
+	for m := uint(1); m <= 12; m++ {
+		if month&(1<<m) == 0 {
+			continue
+		}
+		for d := uint(1); d <= maxDaysInMonth[m]; d++ {
+			if dom&(1<<d) != 0 {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // parseDomField parses the day-of-month field, handling extended L/W syntax if enabled.
