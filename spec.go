@@ -38,6 +38,12 @@ type SpecSchedule struct {
 	// with all other cron fields. When true, the schedule matches if either
 	// DOM or DOW matches (OR logic), for robfig/cron compatibility.
 	DowOrDom bool
+
+	// DSTSkip disables ISC cron behavior for DST spring-forward transitions.
+	// When false (default), a job scheduled in the skipped hour runs in the hour
+	// after the gap, at its scheduled minute. When true, that occurrence is
+	// skipped, matching robfig/cron.
+	DSTSkip bool
 }
 
 // DomConstraintType identifies the type of day-of-month constraint.
@@ -440,7 +446,7 @@ WRAP:
 
 	// A minute or second rollover can also cross a spring-forward gap
 	// (01:59 -> 03:00); the skipped hour's job then runs in this hour too.
-	for !fieldMatches(t.Hour(), s.Hour) && !crossedDSTGap(beforeWrap, t, s.Hour) {
+	for !fieldMatches(t.Hour(), s.Hour) && !crossedDSTGap(beforeWrap, t, s) {
 		if !added {
 			added = true
 			t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, loc)
@@ -448,7 +454,7 @@ WRAP:
 		prev := t
 		t = t.Add(1 * time.Hour)
 		// ISC cron behavior for DST spring-forward.
-		if checkHourDSTSkip(prev, t, s.Hour) {
+		if s.runsSkippedHour(prev, t) {
 			break
 		}
 
@@ -476,9 +482,16 @@ WRAP:
 // crossedDSTGap reports whether a minute or second rollover from before to
 // after jumped over a DST spring-forward gap whose skipped hour is scheduled:
 // the wall clock moved two hours while less than one hour elapsed.
-func crossedDSTGap(before, after time.Time, hourBits uint64) bool {
+func crossedDSTGap(before, after time.Time, s *SpecSchedule) bool {
 	return !before.IsZero() && after.Sub(before) < time.Hour &&
-		checkHourDSTSkip(before, after, hourBits)
+		s.runsSkippedHour(before, after)
+}
+
+// runsSkippedHour reports whether the step from prev to curr jumped over a DST
+// spring-forward gap whose skipped hour this schedule runs in the hour after
+// the gap (ISC cron behavior). It is always false when DSTSkip is set.
+func (s *SpecSchedule) runsSkippedHour(prev, curr time.Time) bool {
+	return !s.DSTSkip && checkHourDSTSkip(prev, curr, s.Hour)
 }
 
 // dayMatches returns true if the schedule's day-of-week and day-of-month
@@ -706,9 +719,9 @@ WRAP:
 // DST spring-forward gap between earlier and later. That run is the first
 // matching minute and second of the hour after the gap. It reports false when
 // no hour was skipped, the skipped hour is not scheduled, or the run is later
-// than latest.
+// than latest, or the schedule sets DSTSkip.
 func dstSkippedRun(earlier, later time.Time, s *SpecSchedule, latest time.Time) (time.Time, bool) {
-	if !checkHourDSTSkip(earlier, later, s.Hour) {
+	if !s.runsSkippedHour(earlier, later) {
 		return time.Time{}, false
 	}
 	run := time.Date(later.Year(), later.Month(), later.Day(), later.Hour(), 0, 0, 0, later.Location())

@@ -703,33 +703,57 @@ func TestPrevDSTSpringForward(t *testing.T) {
 }
 
 // TestPrevNextDSTSymmetry checks that Prev walked backwards over the
-// spring-forward day yields exactly the runs that Next yields forwards.
+// spring-forward day yields exactly the runs that Next yields forwards, both
+// with the default ISC behavior and with DSTSkip.
 func TestPrevNextDSTSymmetry(t *testing.T) {
 	start, end := springForwardNY(t, 7, 0, 0), springForwardNY(t, 9, 12, 0)
+	gapStart, gapEnd := springForwardNY(t, 8, 1, 59), springForwardNY(t, 8, 4, 0)
+	fields := Minute | Hour | Dom | Month | Dow
 	specs := []struct {
-		parser ScheduleParser
-		spec   string
+		options ParseOption
+		spec    string
+		// skipGapRuns is the number of runs on 2026-03-08 between 01:59 and
+		// 04:00 with DSTSkip, which drops the runs of the skipped 02:00 hour.
+		skipGapRuns int
 	}{
-		{standardParser, "30 2 * * *"},
-		{standardParser, "*/15 2 * * *"},
-		{standardParser, "0 2 * * *"},
-		{standardParser, "0 1,2 * * *"},
-		{standardParser, "*/20 1,2 * * *"},
-		{standardParser, "30 1-3 * * *"},
-		{standardParser, "0 * * * *"},
-		{secondParser, "15 30 2 * * *"},
+		{fields, "30 2 * * *", 0},
+		{fields, "*/15 2 * * *", 0},
+		{fields, "0 2 * * *", 0},
+		{fields, "0 1,2 * * *", 0},
+		{fields, "*/20 1,2 * * *", 0},
+		{fields, "30 1-3 * * *", 1},
+		{fields, "0 * * * *", 1},
+		{Second | fields, "15 30 2 * * *", 0},
 	}
 	for _, c := range specs {
-		t.Run(c.spec, func(t *testing.T) {
-			sched, err := c.parser.Parse(c.spec)
-			if err != nil {
-				t.Fatal(err)
-			}
-			forward, backward := runsBetween(sched, start, end)
-			if !slices.EqualFunc(forward, backward, time.Time.Equal) {
-				t.Errorf("Next and Prev disagree\nnext: %v\nprev: %v", forward, backward)
-			}
-		})
+		for _, skip := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/DSTSkip=%t", c.spec, skip), func(t *testing.T) {
+				options := c.options
+				if skip {
+					options |= DSTSkip
+				}
+				sched, err := NewParser(options).Parse(c.spec)
+				if err != nil {
+					t.Fatal(err)
+				}
+				forward, backward := runsBetween(sched, start, end)
+				if !slices.EqualFunc(forward, backward, time.Time.Equal) {
+					t.Errorf("Next and Prev disagree\nnext: %v\nprev: %v", forward, backward)
+				}
+				if !skip {
+					return
+				}
+				n := 0
+				for _, r := range forward {
+					if r.After(gapStart) && r.Before(gapEnd) {
+						n++
+					}
+				}
+				if n != c.skipGapRuns {
+					t.Errorf("got %d runs around the gap, want %d: %v", n, c.skipGapRuns, forward)
+				}
+			})
+		}
 	}
 }
 

@@ -9,6 +9,17 @@ Originally based on [robfig/cron](https://github.com/robfig/cron).
 
 ## [Unreleased]
 
+### Added
+- `RobfigCompat` parser option that parses and schedules specs like
+  robfig/cron v3. It combines `DowOrDom` with three new options that can also
+  be used on their own: `LenientSteps` accepts steps >= the range size (e.g.
+  `*/60`), `EveryRoundUp` rounds interval durations below the minimum up
+  instead of rejecting them, and `DSTSkip` skips times in a DST spring-forward
+  gap instead of running in the hour after it, in both `Next` and `Prev`. Defaults
+  are unchanged. `SpecSchedule` gains a `DSTSkip` field, so code that builds a
+  `SpecSchedule` with an unkeyed struct literal needs one more value
+  ([PR#426])
+
 ### Planned for v2
 - Context-aware Job interface with graceful shutdown support
 
@@ -730,6 +741,7 @@ This fork includes all features from robfig/cron v3 plus:
    ```
 
 [Unreleased]: https://github.com/netresearch/go-cron/compare/v0.17.0...HEAD
+[PR#426]: https://github.com/netresearch/go-cron/pull/426
 [0.17.0]: https://github.com/netresearch/go-cron/compare/v0.16.2...v0.17.0
 [#428]: https://github.com/netresearch/go-cron/issues/428
 [PR#429]: https://github.com/netresearch/go-cron/pull/429

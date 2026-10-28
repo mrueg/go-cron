@@ -39,6 +39,20 @@ The API is 100% compatible with robfig/cron v3 — no code changes required for 
 
 ## Behavioral Differences
 
+> [!TIP]
+> If your schedules must behave like robfig/cron v3, for example because
+> another system that uses robfig/cron (such as the Kubernetes CronJob controller)
+> validates or runs the same specs, use the `RobfigCompat` parser option. It turns on
+> `DowOrDom`, `LenientSteps`, `EveryRoundUp` and `DSTSkip`, which undo the DOM/DOW,
+> step validation, `@every` minimum and DST spring-forward differences below:
+>
+> ```go
+> parser := cron.NewParser(
+>     cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor | cron.RobfigCompat,
+> )
+> c := cron.New(cron.WithParser(parser))
+> ```
+
 While the API is compatible, there are knowingly accepted behavior changes that fix bugs or improve reliability. These changes may affect your application if you were (knowingly or unknowingly) depending on the original behavior.
 
 ### Bug Fixes That Change Behavior
@@ -109,7 +123,7 @@ Result: Job SKIPPED (time 2:30 never exists)
 ```
 Schedule: "0 30 2 * * *" (2:30 AM)
 DST transition: 2:00 AM → 3:00 AM
-Result: Job runs at 3:00 AM (immediately after transition)
+Result: Job runs at 3:30 AM (in the hour after the transition)
 ```
 
 This follows ISC cron behavior used by most Unix systems.

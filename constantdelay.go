@@ -3,7 +3,10 @@
 
 package cron
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 // ConstantDelaySchedule represents a simple recurring duty cycle, e.g. "Every 5 minutes".
 // It does not support jobs more frequent than once a second.
@@ -28,6 +31,8 @@ func Every(duration time.Duration) ConstantDelaySchedule {
 //   - If minInterval <= 0, no minimum is enforced (allows sub-second intervals)
 //
 // Any fields less than a Second are truncated unless minInterval allows sub-second.
+// If the truncation falls below a fractional minInterval (1500ms), the delay
+// becomes the next whole second above it (2s), so it never undercuts the minimum.
 //
 // Example:
 //
@@ -47,6 +52,15 @@ func EveryWithMin(duration, minInterval time.Duration) ConstantDelaySchedule {
 	// Truncate sub-second precision unless sub-second intervals are allowed
 	if minInterval >= time.Second || minInterval <= 0 && duration >= time.Second {
 		duration -= time.Duration(duration.Nanoseconds()) % time.Second
+		// A fractional minimum (1500ms) must not truncate below itself:
+		// round up to the next whole second instead.
+		// Keep the minimum itself if the next whole second would overflow.
+		if duration < minInterval {
+			duration = minInterval
+			if rounded := minInterval.Truncate(time.Second); rounded <= math.MaxInt64-time.Second {
+				duration = rounded + time.Second
+			}
+		}
 	}
 
 	return ConstantDelaySchedule{

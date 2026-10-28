@@ -1717,6 +1717,9 @@ ScheduleParser is an interface for schedule spec parsers.
 type SpecSchedule struct {
     Second, Minute, Hour, Dom, Month, Dow uint64
     Location *time.Location
+    DowOrDom bool // OR instead of AND when both DOM and DOW are restricted
+    DSTSkip  bool // skip runs in a spring-forward gap (robfig/cron behavior)
+    // ... Year, DomConstraints, DowConstraints, MaxSearchYears
 }
 ```
 
@@ -1920,10 +1923,18 @@ const (
     Descriptor                              // Enable @hourly, @every, etc.
     // ... Year, Hash, DowNth, DowLast, DomL, DomW, DowOrDom
     AlignEvery                              // Plain @every fires on the epoch grid, like @every_aligned
+    LenientSteps                            // Accept steps at or above the range size (e.g. */60)
+    StrictDays                              // Reject a day of month that occurs in none of the selected months (e.g. Feb 30)
+    StepWildcard                            // With DowOrDom, a stepped star (*/2) in DOM or DOW still counts as a wildcard
+    EveryRoundUp                            // Round interval durations below the minimum up instead of rejecting them
+    DSTSkip                                 // Skip times in a DST spring-forward gap
 )
+
+// RobfigCompat enables the options that make parsing and Next match robfig/cron v3.
+const RobfigCompat = DowOrDom | LenientSteps | EveryRoundUp | DSTSkip
 ```
 
-ParseOption represents parser configuration flags. `AlignEvery` changes only what a plain `@every` means; `@every_aligned` and `@every_start` keep their meaning on every parser.
+ParseOption represents parser configuration flags. `AlignEvery` changes only what a plain `@every` means; `@every_aligned` and `@every_start` keep their meaning on every parser. See the `RobfigCompat` doc comment for the cases where it still differs from robfig/cron.
 
 ---
 
