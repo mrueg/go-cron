@@ -1924,6 +1924,8 @@ const (
     // ... Year, Hash, DowNth, DowLast, DomL, DomW, DowOrDom
     AlignEvery                              // Plain @every fires on the epoch grid, like @every_aligned
     LenientSteps                            // Accept steps at or above the range size (e.g. */60)
+    StrictDays                              // Reject a day of month that occurs in none of the selected months (e.g. Feb 30)
+    StepWildcard                            // With DowOrDom, a stepped star (*/2) in DOM or DOW still counts as a wildcard
     EveryRoundUp                            // Round interval durations below the minimum up instead of rejecting them
     DSTSkip                                 // Skip times in a DST spring-forward gap
 )
