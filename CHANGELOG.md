@@ -67,9 +67,10 @@ Go version stays at 1.26. `SpecSchedule` gains a field, so code that builds a
 - `@every 1h` and other intervals no longer lose a regular run on the DST
   fall-back day. The fall-back guard skipped a next time that showed the
   previous run's wall-clock time, which for an interval is a regular run: in
-  America/New_York `@every 1h` ran 2 times instead of 3 across the fall-back on
-  2026-11-01. Intervals are now exempt; calendar specs and union members keep
-  the guard ([PR#440])
+  America/New_York, `@every 1h` was scheduled 2 times instead of 3 across the
+  fall-back hour of 2026-11-01. Intervals are now exempt; calendar specs keep
+  the guard. A union run is skipped only when every member that fires then is a
+  calendar spec that repeats the time ([PR#440])
 - A wraparound range whose start is above the field maximum or whose end is
   below the field minimum is a parse error. `0 25-1 * * *` and `0 0 5-0 * *`
   parsed before ([PR#419])
