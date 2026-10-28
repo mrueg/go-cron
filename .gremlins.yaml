@@ -1,0 +1,12 @@
+# Gremlins mutation testing configuration, read by the shared
+# go-mutation-testing workflow (.github/workflows/mutation.yml).
+# Keys follow gremlins v0.6.0: settings for `gremlins unleash` sit under
+# `unleash:`; a key outside that block is ignored without a warning.
+# https://gremlins.dev/latest/usage/configuration/
+
+unleash:
+  # The scheduler tests wait on real timers; a mutant that breaks a stop
+  # condition makes them run long, so allow five times the normal run.
+  timeout-coefficient: 5
+  # Uploaded by the workflow as the mutation-reports artifact.
+  output: mutation-report.json
