@@ -28,6 +28,8 @@ func Every(duration time.Duration) ConstantDelaySchedule {
 //   - If minInterval <= 0, no minimum is enforced (allows sub-second intervals)
 //
 // Any fields less than a Second are truncated unless minInterval allows sub-second.
+// If the truncation falls below a fractional minInterval (1500ms), the delay
+// becomes the next whole second above it (2s), so it never undercuts the minimum.
 //
 // Example:
 //
@@ -47,6 +49,11 @@ func EveryWithMin(duration, minInterval time.Duration) ConstantDelaySchedule {
 	// Truncate sub-second precision unless sub-second intervals are allowed
 	if minInterval >= time.Second || minInterval <= 0 && duration >= time.Second {
 		duration -= time.Duration(duration.Nanoseconds()) % time.Second
+		// A fractional minimum (1500ms) must not truncate below itself:
+		// round up to the next whole second instead.
+		if duration < minInterval {
+			duration = minInterval.Truncate(time.Second) + time.Second
+		}
 	}
 
 	return ConstantDelaySchedule{

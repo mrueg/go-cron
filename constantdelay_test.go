@@ -106,6 +106,24 @@ func TestEveryWithMin(t *testing.T) {
 			wantDelay:   5 * time.Second,
 		},
 		{
+			name:        "fractional minimum - raised duration rounds up, not down",
+			duration:    500 * time.Millisecond,
+			minInterval: 1500 * time.Millisecond,
+			wantDelay:   2 * time.Second,
+		},
+		{
+			name:        "fractional minimum - duration above it truncates to it or above",
+			duration:    1700 * time.Millisecond,
+			minInterval: 1500 * time.Millisecond,
+			wantDelay:   2 * time.Second,
+		},
+		{
+			name:        "fractional minimum - truncation that stays above it is kept",
+			duration:    2700 * time.Millisecond,
+			minInterval: 1500 * time.Millisecond,
+			wantDelay:   2 * time.Second,
+		},
+		{
 			name:        "sub-second preserved when minimum allows",
 			duration:    500 * time.Millisecond,
 			minInterval: 100 * time.Millisecond,
