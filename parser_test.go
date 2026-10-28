@@ -2414,6 +2414,14 @@ func TestWraparoundRangeOutOfBounds(t *testing.T) {
 			}
 		}
 	}
+	// The end of a range below the field minimum (day of month and month
+	// start at 1) is named as such.
+	for _, spec := range []string{"0 0 5-0 * *", "0 0 * 12-0 *"} {
+		_, err := NewParser(opts).Parse(spec)
+		if err == nil || !strings.Contains(err.Error(), "below minimum") {
+			t.Errorf("Parse(%q): got %v, want a \"below minimum\" error", spec, err)
+		}
+	}
 	// A valid wraparound range still parses.
 	if _, err := NewParser(opts).Parse("0 22-2 * * *"); err != nil {
 		t.Errorf("Parse(\"0 22-2 * * *\"): %v", err)
