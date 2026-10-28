@@ -60,7 +60,7 @@ func TestRange(t *testing.T) {
 	}
 
 	for _, c := range ranges {
-		actual, err := getRange(c.expr, bounds{c.min, c.max, nil, false})
+		actual, err := getRange(c.expr, bounds{c.min, c.max, nil, false, false})
 		if len(c.err) != 0 && (err == nil || !strings.Contains(err.Error(), c.err)) {
 			t.Errorf("%s => expected %v, got %v", c.expr, c.err, err)
 		}
@@ -86,7 +86,7 @@ func TestField(t *testing.T) {
 	}
 
 	for _, c := range fields {
-		actual, _ := getField(c.expr, bounds{c.min, c.max, nil, false})
+		actual, _ := getField(c.expr, bounds{c.min, c.max, nil, false, false})
 		if actual != c.expected {
 			t.Errorf("%s => expected %d, got %d", c.expr, c.expected, actual)
 		}
@@ -2389,5 +2389,77 @@ func TestParserWithCacheStoresErrors(t *testing.T) {
 	}
 	if err1 != err2 { //nolint:errorlint // identity is the point: same cached value
 		t.Errorf("expected the cached error value, got a new one: %v vs %v", err1, err2)
+	}
+}
+
+// TestWraparoundRangeOutOfBounds verifies that a range whose start lies above
+// the field maximum is rejected, wraparound or not, and with or without
+// LenientSteps. Before, 61-1 passed and 61-0/2 failed only by an underflow.
+func TestWraparoundRangeOutOfBounds(t *testing.T) {
+	opts := Minute | Hour | Dom | Month | Dow
+	for _, spec := range []string{
+		"61-1 * * * *",
+		"61-0 * * * *",
+		"61-0/2 * * * *",
+		"0 25-1 * * *",
+	} {
+		for _, p := range []Parser{NewParser(opts), NewParser(opts | LenientSteps)} {
+			_, err := p.Parse(spec)
+			if err == nil {
+				t.Errorf("Parse(%q) with options %b accepted an out-of-range start", spec, p.options)
+				continue
+			}
+			if !strings.Contains(err.Error(), "above maximum") {
+				t.Errorf("Parse(%q): got %v, want an \"above maximum\" error", spec, err)
+			}
+		}
+	}
+	// The end of a range below the field minimum (day of month and month
+	// start at 1) is named as such.
+	for _, spec := range []string{"0 0 5-0 * *", "0 0 * 12-0 *"} {
+		_, err := NewParser(opts).Parse(spec)
+		if err == nil || !strings.Contains(err.Error(), "below minimum") {
+			t.Errorf("Parse(%q): got %v, want a \"below minimum\" error", spec, err)
+		}
+	}
+	// A valid wraparound range still parses.
+	if _, err := NewParser(opts).Parse("0 22-2 * * *"); err != nil {
+		t.Errorf("Parse(\"0 22-2 * * *\"): %v", err)
+	}
+}
+
+// TestLenientSteps verifies that the LenientSteps option accepts steps at or
+// above the range size and selects only the range start, as robfig/cron did.
+func TestLenientSteps(t *testing.T) {
+	strict := NewParser(Minute | Hour | Dom | Month | Dow)
+	lenient := NewParser(Minute | Hour | Dom | Month | Dow | LenientSteps)
+
+	tests := []struct {
+		name  string
+		spec  string
+		field func(*SpecSchedule) uint64
+		want  uint64
+	}{
+		{"star step equal to range", "*/60 * * * *", func(s *SpecSchedule) uint64 { return s.Minute }, 1 << 0},
+		{"star step above range", "*/100 * * * *", func(s *SpecSchedule) uint64 { return s.Minute }, 1 << 0},
+		{"range step above range", "0 0-5/10 * * *", func(s *SpecSchedule) uint64 { return s.Hour }, 1 << 0},
+		{"wraparound range", "0 22-2/30 * * *", func(s *SpecSchedule) uint64 { return s.Hour }, 1 << 22},
+		{"Sunday as 7 with a step", "0 0 * * 7/2", func(s *SpecSchedule) uint64 { return s.Dow }, 1 << 0},
+		{"stepped 7 in a list", "0 0 * * 1,7/3", func(s *SpecSchedule) uint64 { return s.Dow }, 1<<0 | 1<<1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := strict.Parse(tt.spec); err == nil {
+				t.Fatalf("default parser accepted %q, want a step size error", tt.spec)
+			}
+			sched, err := lenient.Parse(tt.spec)
+			if err != nil {
+				t.Fatalf("Parse(%q) with LenientSteps: %v", tt.spec, err)
+			}
+			if got := tt.field(sched.(*SpecSchedule)); got != tt.want {
+				t.Errorf("Parse(%q) bits = %b, want %b", tt.spec, got, tt.want)
+			}
+		})
 	}
 }
