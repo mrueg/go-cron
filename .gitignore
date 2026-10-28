@@ -27,3 +27,6 @@ claudedocs/
 coverage.out
 *.coverprofile
 zen_generated.code
+
+# Gremlins mutation report (see .gremlins.yaml)
+mutation-report.json
