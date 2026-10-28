@@ -875,6 +875,35 @@ func TestStepWildcard(t *testing.T) {
 	}
 }
 
+// TestStepWildcardWithoutDowOrDom verifies that StepWildcard alone changes
+// nothing: both day fields stay ANDed, and AnalyzeSpec still warns about it.
+func TestStepWildcardWithoutDowOrDom(t *testing.T) {
+	opts := Minute | Hour | Dom | Month | Dow
+	spec := "0 0 */2 * MON"
+
+	withOpt := AnalyzeSpec(spec, opts|StepWildcard)
+	without := AnalyzeSpec(spec, opts)
+	if !withOpt.Valid || !without.Valid {
+		t.Fatalf("spec %q should be valid: %v / %v", spec, withOpt.Error, without.Error)
+	}
+	if len(without.Warnings) == 0 {
+		t.Fatalf("AnalyzeSpec(%q) without StepWildcard returned no warning, want the AND-logic warning", spec)
+	}
+	if !slices.Equal(withOpt.Warnings, without.Warnings) {
+		t.Errorf("StepWildcard without DowOrDom changed the warnings: got %q, want %q", withOpt.Warnings, without.Warnings)
+	}
+
+	sched, err := NewParser(opts | StepWildcard).Parse(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Wed Aug 5 2026 is an odd day but no Monday: AND logic must not match it.
+	tm := getTime("Wed Aug 5 00:00 2026")
+	if sched.Next(tm.Add(-time.Second)).Equal(tm) {
+		t.Errorf("StepWildcard without DowOrDom matched %s, want AND logic", tm)
+	}
+}
+
 // TestDowOrDomParseOption verifies the DowOrDom ParseOption is correctly applied.
 func TestDowOrDomParseOption(t *testing.T) {
 	// Default parser (AND mode)

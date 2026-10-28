@@ -502,7 +502,9 @@ func (p Parser) parse(spec string) (Schedule, error) {
 
 	// Vixie cron marks a day field as unrestricted whenever it starts with '*',
 	// step or not, so "0 0 */2 * 1" is odd days that are also Mondays.
-	if p.options&StepWildcard != 0 {
+	// Without DowOrDom both day fields are ANDed anyway; setting the bit there
+	// would only hide the AND-logic warning of AnalyzeSpec.
+	if p.options&StepWildcard != 0 && p.options&DowOrDom != 0 {
 		dayofmonth |= wildcardBit(fields[3])
 		dayofweek |= wildcardBit(fields[5])
 	}
