@@ -4,6 +4,7 @@
 package cron
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -122,6 +123,12 @@ func TestEveryWithMin(t *testing.T) {
 			duration:    2700 * time.Millisecond,
 			minInterval: 1500 * time.Millisecond,
 			wantDelay:   2 * time.Second,
+		},
+		{
+			name:        "fractional minimum at the duration limit - no overflow",
+			duration:    0,
+			minInterval: math.MaxInt64,
+			wantDelay:   math.MaxInt64,
 		},
 		{
 			name:        "sub-second preserved when minimum allows",
