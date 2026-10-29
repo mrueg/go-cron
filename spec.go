@@ -282,13 +282,17 @@ func dowConstraintMatches(constraints []DowConstraint, t time.Time) bool {
 // and a 'wrap' flag that is true if the minute rolled past 59 to 0.
 // When wrap is true, the caller must increment the hour and re-validate.
 func advanceMinute(t time.Time, minuteBits uint64, added bool) (time.Time, bool, bool) {
-	for !fieldMatches(t.Minute(), minuteBits) {
+	for minute := t.Minute(); !fieldMatches(minute, minuteBits); {
 		if !added {
 			added = true
 			t = t.Truncate(time.Minute)
 		}
 		t = t.Add(1 * time.Minute)
-		if t.Minute() == 0 {
+		prev := minute
+		minute = t.Minute()
+		// Any new hour starts with a smaller minute: 59 -> 0, and 01:59 ->
+		// 02:30 across a 30-minute DST gap.
+		if minute < prev {
 			return t, added, true // wrap
 		}
 	}
@@ -301,18 +305,133 @@ func advanceMinute(t time.Time, minuteBits uint64, added bool) (time.Time, bool,
 // When wrap is true, the caller must re-validate the date fields.
 func advanceHour(t time.Time, hourBits uint64, added bool) (time.Time, bool, bool) {
 	for !fieldMatches(t.Hour(), hourBits) {
-		if !added {
-			added = true
-			t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, t.Location())
-		}
+		added = true
 		day := t.Day()
-		t = t.Add(1 * time.Hour)
+		t = nextHourStart(t)
 		// A new day can start at 01:00 when DST skips midnight.
 		if t.Day() != day {
 			return t, added, true // wrap
 		}
 	}
 	return t, added, false
+}
+
+// nextHourStart returns the start of the wall-clock hour after t's hour.
+// When that hour starts in a DST spring-forward gap, it returns the end of
+// the gap (02:30 for a gap from 02:00 to 02:30). When it starts twice because
+// of a fall-back, it returns the first copy. Stepping by wall-clock hours
+// keeps the result on the full hour after a 30- or 45-minute shift.
+func nextHourStart(t time.Time) time.Time {
+	want := (t.Hour() + 1) % 24
+	// One real hour on from a full hour is the next full hour unless a
+	// transition lies in between.
+	if t.Minute() == 0 && t.Second() == 0 && t.Nanosecond() == 0 {
+		if next := t.Add(time.Hour); next.Hour() == want && next.Minute() == 0 {
+			return next
+		}
+	}
+	next := nextFullHour(t, want)
+	// A transition that changes the hour comes first: the end of a gap that
+	// swallowed the full hour (02:00 -> 02:30), or a fall-back at a minute
+	// other than 00 that starts an hour again (Chatham: 03:44:59 +1345 ->
+	// 02:45 +1245).
+	if _, end := t.ZoneBounds(); !end.IsZero() && end.Before(next) && end.Hour() != t.Hour() {
+		return end
+	}
+	return next
+}
+
+// nextFullHour returns the first instant after t that reads want:00. When a
+// spring-forward gap swallowed that time, it returns one real hour after t;
+// nextHourStart then stops at the end of the gap, which comes first.
+func nextFullHour(t time.Time, want int) time.Time {
+	next := time.Date(t.Year(), t.Month(), t.Day(), t.Hour()+1, 0, 0, 0, t.Location())
+	if next.Hour() == want && next.Minute() == 0 {
+		// time.Date may pick either copy of a repeated wall time; take the
+		// first one that lies after t.
+		if first := earlierCopy(next); first.After(t) {
+			return first
+		}
+		if next.After(t) {
+			return next
+		}
+		if second := laterCopy(next); second.After(t) {
+			return second
+		}
+	}
+	return t.Add(time.Hour)
+}
+
+// prevHourEnd returns the last second (hh:59:59) of the wall-clock hour
+// before t's hour. When that second lies in a DST spring-forward gap, it
+// returns the last second before the gap. When it exists twice because of a
+// fall-back, it returns the second copy, the later one.
+func prevHourEnd(t time.Time) time.Time {
+	prev := prevFullHourEnd(t, (t.Hour()+23)%24)
+	// A transition that changes the hour comes first: the last second before
+	// a gap that swallowed the full hour end, which can belong to an earlier
+	// hour, or a fall-back at a minute other than 00 that ends an hour again
+	// (Chatham: 03:44:59 +1345 before 02:45 +1245).
+	if start, _ := t.ZoneBounds(); !start.IsZero() && !start.After(t) {
+		if last := start.Add(-time.Second); last.After(prev) && last.Hour() != t.Hour() {
+			return last
+		}
+	}
+	return prev
+}
+
+// prevFullHourEnd returns the last instant before t that reads want:59:59.
+// When a spring-forward gap swallowed that time, it returns one real hour
+// before t; prevHourEnd then stops at the last second before the gap, which
+// comes later.
+func prevFullHourEnd(t time.Time, want int) time.Time {
+	prev := time.Date(t.Year(), t.Month(), t.Day(), t.Hour()-1, 59, 59, 0, t.Location())
+	if prev.Hour() == want && prev.Minute() == 59 {
+		// time.Date may pick either copy of a repeated wall time; take the
+		// last one that lies before t.
+		if second := laterCopy(prev); second.Before(t) {
+			return second
+		}
+		if prev.Before(t) {
+			return prev
+		}
+		if first := earlierCopy(prev); first.Before(t) {
+			return first
+		}
+	}
+	return t.Add(-1 * time.Hour)
+}
+
+// earlierCopy returns the first copy of t's wall-clock time when t lies in
+// the second copy of a DST fall-back period, and t otherwise.
+func earlierCopy(t time.Time) time.Time {
+	start, _ := t.ZoneBounds()
+	if start.IsZero() {
+		return t
+	}
+	_, before := start.Add(-time.Nanosecond).Zone()
+	_, after := start.Zone()
+	repeated := time.Duration(before-after) * time.Second
+	if repeated <= 0 || !t.Before(start.Add(repeated)) {
+		return t
+	}
+	return t.Add(-repeated)
+}
+
+// laterCopy returns the second copy of t's wall-clock time when t lies in
+// the first copy of a DST fall-back period, and t otherwise.
+func laterCopy(t time.Time) time.Time {
+	_, end := t.ZoneBounds()
+	if end.IsZero() {
+		return t
+	}
+	_, before := t.Zone()
+	_, after := end.Zone()
+	repeated := time.Duration(before-after) * time.Second
+	if repeated <= 0 || t.Before(end.Add(-repeated)) {
+		return t
+	}
+	return t.Add(repeated)
 }
 
 // advanceSecond advances time until the second field matches the schedule bitmask.
@@ -416,7 +535,7 @@ func (s *SpecSchedule) Next(t time.Time) time.Time {
 		return next
 	}
 	if run, ok := s.nextGapRun(t, next); ok {
-		return run.In(next.Location())
+		return run.In(t.Location())
 	}
 	return next
 }
@@ -566,7 +685,7 @@ func prepareTimeForPrevSchedule(t time.Time, schedLoc *time.Location) (prepared 
 // When wrap is true, the caller must decrement the hour and re-validate.
 func retreatMinute(t time.Time, minuteBits uint64, added bool) (time.Time, bool, bool) {
 	for !fieldMatches(t.Minute(), minuteBits) {
-		cur := t.Minute()
+		cur, hour := t.Minute(), t.Hour()
 		if !added {
 			added = true
 			// Truncate to beginning of current minute, then go back 1 second
@@ -575,7 +694,8 @@ func retreatMinute(t time.Time, minuteBits uint64, added bool) (time.Time, bool,
 		} else {
 			t = t.Add(-1 * time.Minute)
 		}
-		if t.Minute() > cur {
+		// A 45-minute DST gap moves from 03:45 to 02:44, not to minute 59.
+		if t.Minute() > cur || t.Hour() != hour {
 			return t, added, true // wrap
 		}
 	}
@@ -608,13 +728,8 @@ func retreatSecond(t time.Time, secondBits uint64, added bool) (time.Time, bool,
 func retreatHour(t time.Time, hourBits uint64, added bool) (_ time.Time, _, wrap bool) {
 	for !fieldMatches(t.Hour(), hourBits) {
 		cur := t.Hour()
-		if !added {
-			added = true
-			// Set to end of current hour
-			t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 59, 59, 0, t.Location())
-		} else {
-			t = t.Add(-1 * time.Hour)
-		}
+		added = true
+		t = prevHourEnd(t)
 		if t.Hour() > cur {
 			return t, added, true
 		}
@@ -747,12 +862,15 @@ func (s *SpecSchedule) nextGapRun(t, next time.Time) (time.Time, bool) {
 	loc := s.scheduleLocation(t)
 	limit := next
 	if limit.IsZero() {
-		limit = t.AddDate(s.searchSpan()+1, 0, 0)
+		// nextExisting searches to the end of year t.Year()+searchSpan.
+		limit = time.Date(t.In(loc).Year()+s.searchSpan()+1, 1, 1, 0, 0, 0, 0, loc)
 	}
 	// The run for the gap that opened the zone in effect at t can still lie
 	// after t (for 01:59:59 -> 03:00, a 02:30 job runs at 03:30).
 	tr, end := t.In(loc).ZoneBounds()
-	if tr.IsZero() {
+	if tr.IsZero() || !t.Before(tr.Add(gapLength(tr, loc))) {
+		// A gap run lies before the end of its gap; past it, only later
+		// transitions can hold a run.
 		tr = end
 	}
 	for !tr.IsZero() && tr.Before(limit) {
@@ -770,7 +888,8 @@ func (s *SpecSchedule) prevGapRun(t, prev time.Time) (time.Time, bool) {
 	loc := s.scheduleLocation(t)
 	limit := prev
 	if limit.IsZero() {
-		limit = t.AddDate(-s.searchSpan()-1, 0, 0)
+		// prevExisting searches back to the start of year t.Year()-searchSpan.
+		limit = time.Date(t.In(loc).Year()-s.searchSpan(), 1, 1, 0, 0, 0, 0, loc).Add(-time.Nanosecond)
 	}
 	before := t.Truncate(time.Second) // Prev ignores fractions of a second
 	tr, _ := t.In(loc).ZoneBounds()
@@ -786,6 +905,15 @@ func (s *SpecSchedule) prevGapRun(t, prev time.Time) (time.Time, bool) {
 	return time.Time{}, false
 }
 
+// gapLength returns how far the zone transition tr moves the clock forward:
+// the length of a spring-forward gap, or zero or less for any other
+// transition.
+func gapLength(tr time.Time, loc *time.Location) time.Duration {
+	_, before := tr.Add(-time.Nanosecond).In(loc).Zone()
+	_, after := tr.In(loc).Zone()
+	return time.Duration(after-before) * time.Second
+}
+
 // gapRun returns the run for the DST spring-forward gap that opens at the
 // zone transition tr: the earliest scheduled wall time that the gap skips,
 // shifted by the length of the gap. All other times in the gap merge into
@@ -793,14 +921,14 @@ func (s *SpecSchedule) prevGapRun(t, prev time.Time) (time.Time, bool) {
 // It reports false when tr does not move the clock forward or the gap skips
 // no scheduled time.
 func (s *SpecSchedule) gapRun(tr time.Time, loc *time.Location) (time.Time, bool) {
-	_, before := tr.Add(-time.Nanosecond).In(loc).Zone()
-	_, after := tr.In(loc).Zone()
-	if after <= before {
+	gap := gapLength(tr, loc)
+	if gap <= 0 {
 		return time.Time{}, false
 	}
 	// Walk the skipped wall times as UTC times with the same clock reading.
+	_, before := tr.Add(-time.Nanosecond).In(loc).Zone()
 	start := tr.UTC().Add(time.Duration(before) * time.Second)
-	end := start.Add(time.Duration(after-before) * time.Second)
+	end := start.Add(gap)
 	for w := start; w.Before(end); w = w.Truncate(time.Minute).Add(time.Minute) {
 		if !yearMatches(w.Year(), s.Year) || !fieldMatches(int(w.Month()), s.Month) ||
 			!dayMatches(s, w) || !fieldMatches(w.Hour(), s.Hour) || !fieldMatches(w.Minute(), s.Minute) {

@@ -254,6 +254,13 @@ func gapOracle(t *testing.T, s *SpecSchedule, loc *time.Location, start, end tim
 			_, lastOff = i.Zone()
 			if matches {
 				runs = append(runs, i)
+				// In a fall-back overlap the wall time exists twice; Next
+				// reports both copies.
+				for _, d := range []time.Duration{-2 * time.Hour, -time.Hour, -30 * time.Minute, 30 * time.Minute, time.Hour, 2 * time.Hour} {
+					if j := i.Add(d); j.Hour() == w.Hour() && j.Minute() == w.Minute() && j.Day() == w.Day() {
+						runs = append(runs, j)
+					}
+				}
 			}
 		}
 	}
@@ -270,8 +277,51 @@ func TestDSTGapSweep(t *testing.T) {
 		specs      []string
 	}{
 		{
-			"Australia/Lord_Howe", time.Date(2026, 10, 3, 22, 0, 0, 0, time.UTC), time.Date(2026, 10, 4, 6, 0, 0, 0, time.UTC),
-			[]string{"15 2 * * *", "5,15 2 * * *", "15,40 2 * * *", "0,30 2 * * *", "*/10 2 * * *", "0 * * * *", "45 1,2 * * *", "* 2 * * *"},
+			"Australia/Lord_Howe", time.Date(2026, 10, 3, 22, 0, 0, 0, time.UTC), time.Date(2026, 10, 5, 2, 0, 0, 0, time.UTC),
+			[]string{
+				"15 2 * * *", "5,15 2 * * *", "15,40 2 * * *", "0,30 2 * * *", "*/10 2 * * *", "0 * * * *", "45 1,2 * * *", "* 2 * * *",
+				"0 9 * * *", "15 3 * * *", "45 1 * * *", "30 23 * * *", "0 0 * * *", "10 5 * * *",
+			},
+		},
+		{
+			// Fall-back: 2026-10-25 03:00 CEST -> 02:00 CET repeats 02:00-03:00.
+			"Europe/Berlin", time.Date(2026, 10, 24, 22, 0, 0, 0, time.UTC), time.Date(2026, 10, 26, 2, 0, 0, 0, time.UTC),
+			[]string{"30 2 * * *", "0 2 * * *", "0 */2 * * *", "15 1,2,3 * * *", "0 9 * * *"},
+		},
+		{
+			// Fall-back: 2026-11-01 02:00 EDT -> 01:00 EST.
+			"America/New_York", time.Date(2026, 10, 31, 22, 0, 0, 0, time.UTC), time.Date(2026, 11, 2, 2, 0, 0, 0, time.UTC),
+			[]string{"30 1 * * *", "0,30 1 * * *", "0 */2 * * *", "0 * * * *", "0 9 * * *", "59 0 * * *"},
+		},
+		{
+			// Fall-back: 2026-10-25 02:00 BST -> 01:00 GMT.
+			"Europe/London", time.Date(2026, 10, 24, 22, 0, 0, 0, time.UTC), time.Date(2026, 10, 26, 2, 0, 0, 0, time.UTC),
+			[]string{"30 1 * * *", "0 1 * * *", "0 */3 * * *", "0 9 * * *"},
+		},
+		{
+			// Fall-back: 2026-04-05 03:00 AEDT -> 02:00 AEST.
+			"Australia/Sydney", time.Date(2026, 4, 4, 22, 0, 0, 0, time.UTC), time.Date(2026, 4, 6, 2, 0, 0, 0, time.UTC),
+			[]string{"0 2 * * *", "30 2 * * *", "15 1-3 * * *", "0 9 * * *"},
+		},
+		{
+			// Fall-back: 2026-04-05 03:45 +1345 -> 02:45 +1245 repeats 02:45-03:45.
+			"Pacific/Chatham", time.Date(2026, 4, 4, 22, 0, 0, 0, time.UTC), time.Date(2026, 4, 6, 2, 0, 0, 0, time.UTC),
+			[]string{"30 2 * * *", "50 2 * * *", "0 3 * * *", "30 3 * * *", "15 * * * *", "0 9 * * *"},
+		},
+		{
+			// Fall-back by two hours: 2026-10-25 03:00 +02 -> 01:00 +00.
+			"Antarctica/Troll", time.Date(2026, 10, 24, 22, 0, 0, 0, time.UTC), time.Date(2026, 10, 26, 2, 0, 0, 0, time.UTC),
+			[]string{"30 2 * * *", "15 1 * * *", "0 */2 * * *", "*/20 * * * *", "0 9 * * *"},
+		},
+		{
+			// Spring-forward: 2026-09-27 02:45 +1245 -> 03:45 +1345.
+			"Pacific/Chatham", time.Date(2026, 9, 26, 22, 0, 0, 0, time.UTC), time.Date(2026, 9, 28, 2, 0, 0, 0, time.UTC),
+			[]string{"30 2 * * *", "50 2 * * *", "0 3 * * *", "45 3 * * *", "0 9 * * *"},
+		},
+		{
+			// Fall-back: 2026-04-05 02:00 +11 -> 01:30 +1030 repeats 01:30-02:00.
+			"Australia/Lord_Howe", time.Date(2026, 4, 4, 22, 0, 0, 0, time.UTC), time.Date(2026, 4, 6, 2, 0, 0, 0, time.UTC),
+			[]string{"0 9 * * *", "45 1 * * *", "15 1 * * *", "0 2 * * *", "*/20 * * * *", "0 0 * * *"},
 		},
 		{
 			"America/Santiago", time.Date(2026, 9, 5, 20, 0, 0, 0, time.UTC), time.Date(2026, 9, 6, 4, 0, 0, 0, time.UTC),
@@ -319,5 +369,67 @@ func TestDSTGapSweep(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestDSTGapRun_SearchLimit checks that a gap run counts only within the
+// years that Next and Prev search, and that it keeps the caller's location.
+func TestDSTGapRun_SearchLimit(t *testing.T) {
+	berlin := loadLocation(t, "Europe/Berlin") // 2032-03-28 02:00 -> 03:00
+	p := NewParser(Minute | Hour | Dom | Month | Dow | Year)
+	far, err := p.Parse("TZ=Europe/Berlin 30 2 28 3 * 2032")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := far.Next(time.Date(2026, 6, 1, 0, 0, 0, 0, berlin)); !got.IsZero() {
+		t.Errorf("Next beyond the search limit = %v, want zero time", got)
+	}
+	if got := far.(ScheduleWithPrev).Prev(time.Date(2038, 6, 1, 0, 0, 0, 0, berlin)); !got.IsZero() {
+		t.Errorf("Prev beyond the search limit = %v, want zero time", got)
+	}
+
+	only, err := p.Parse("TZ=Europe/Berlin 30 2 29 3 * 2026") // 2026-03-29 is a gap day
+	if err != nil {
+		t.Fatal(err)
+	}
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, berlin)
+	got := only.Next(from)
+	want := time.Date(2026, 3, 29, 3, 30, 0, 0, berlin)
+	if !got.Equal(want) || got.Location() != berlin {
+		t.Errorf("Next(%v) = %v in %v, want %v in %v", from, got, got.Location(), want, berlin)
+	}
+}
+
+// TestNextDSTFallBackFirstCopy pins that Next returns the first copy of a
+// repeated wall time also where time.Date picks the second copy (zones east
+// of UTC); the scheduler then skips the second copy (ADR-016).
+func TestNextDSTFallBackFirstCopy(t *testing.T) {
+	tests := []struct {
+		zone, spec string
+		from       time.Time // wall clock, UTC-coded
+		first      time.Time // UTC
+		second     time.Time // UTC
+	}{
+		{"Europe/Berlin", "30 2 * * *", time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC), time.Date(2026, 10, 25, 0, 30, 0, 0, time.UTC), time.Date(2026, 10, 25, 1, 30, 0, 0, time.UTC)},
+		{"Europe/London", "30 1 * * *", time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC), time.Date(2026, 10, 25, 0, 30, 0, 0, time.UTC), time.Date(2026, 10, 25, 1, 30, 0, 0, time.UTC)},
+		{"Australia/Sydney", "0 2 * * *", time.Date(2026, 4, 4, 12, 0, 0, 0, time.UTC), time.Date(2026, 4, 4, 15, 0, 0, 0, time.UTC), time.Date(2026, 4, 4, 16, 0, 0, 0, time.UTC)},
+		{"America/New_York", "30 1 * * *", time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC), time.Date(2026, 11, 1, 5, 30, 0, 0, time.UTC), time.Date(2026, 11, 1, 6, 30, 0, 0, time.UTC)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.zone, func(t *testing.T) {
+			loc := loadLocation(t, tc.zone)
+			sched, err := ParseStandard("TZ=" + tc.zone + " " + tc.spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			from := time.Date(tc.from.Year(), tc.from.Month(), tc.from.Day(), tc.from.Hour(), 0, 0, 0, loc)
+			first := sched.Next(from)
+			if !first.Equal(tc.first) {
+				t.Fatalf("Next(%v) = %v, want %v", from, first.In(loc), tc.first.In(loc))
+			}
+			if second := sched.Next(first); !second.Equal(tc.second) {
+				t.Errorf("Next(%v) = %v, want %v", first.In(loc), second.In(loc), tc.second.In(loc))
+			}
+		})
 	}
 }
