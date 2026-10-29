@@ -139,21 +139,28 @@ func TestPrevNextDSTGapSymmetry(t *testing.T) {
 		for _, spec := range z.specs {
 			for _, skip := range []bool{false, true} {
 				t.Run(fmt.Sprintf("%s/%s/DSTSkip=%t", z.loc, spec, skip), func(t *testing.T) {
-					options := Minute | Hour | Dom | Month | Dow
-					if skip {
-						options |= DSTSkip
-					}
-					sched, err := NewParser(options).Parse("TZ=" + z.loc.String() + " " + spec)
-					if err != nil {
-						t.Fatal(err)
-					}
-					forward, backward := runsBetween(sched, z.start, z.end)
-					if !slices.EqualFunc(forward, backward, time.Time.Equal) {
-						t.Errorf("Next and Prev disagree\nnext: %v\nprev: %v", forward, backward)
-					}
+					checkSymmetry(t, z.loc, spec, skip, z.start, z.end)
 				})
 			}
 		}
+	}
+}
+
+// checkSymmetry checks that Next and Prev list the same runs of spec in loc
+// between start and end.
+func checkSymmetry(t *testing.T, loc *time.Location, spec string, skip bool, start, end time.Time) {
+	t.Helper()
+	options := Minute | Hour | Dom | Month | Dow
+	if skip {
+		options |= DSTSkip
+	}
+	sched, err := NewParser(options).Parse("TZ=" + loc.String() + " " + spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forward, backward := runsBetween(sched, start, end)
+	if !slices.EqualFunc(forward, backward, time.Time.Equal) {
+		t.Errorf("Next and Prev disagree\nnext: %v\nprev: %v", forward, backward)
 	}
 }
 
@@ -186,41 +193,49 @@ func TestDSTGap_SchedulerRun(t *testing.T) {
 			inZone := func(w time.Time) time.Time {
 				return time.Date(w.Year(), w.Month(), w.Day(), w.Hour(), w.Minute(), w.Second(), 0, loc)
 			}
-			clock := NewFakeClock(inZone(tc.start))
-			c := New(WithClock(clock), WithLocation(loc))
-			var runs atomic.Int32
-			if _, err := c.AddFunc(tc.spec, func() { runs.Add(1) }); err != nil {
-				t.Fatal(err)
-			}
-			c.Start()
-			defer c.Stop()
-
-			var got []time.Time
-			for range tc.want {
-				clock.BlockUntil(1)
-				next := c.Entries()[0].Next
-				got = append(got, next)
-				clock.Set(next)
-				deadline := time.Now().Add(2 * time.Second)
-				for c.Entries()[0].Next.Equal(next) && time.Now().Before(deadline) {
-					time.Sleep(time.Millisecond)
-				}
-			}
+			got, runs := stepScheduler(t, loc, tc.spec, inZone(tc.start), len(tc.want))
 			for i, w := range tc.want {
 				if !got[i].Equal(inZone(w)) {
 					t.Errorf("run %d = %v, want %v", i, got[i].In(loc), inZone(w))
 				}
 			}
-			// Jobs run in their own goroutines; wait for the last one.
-			deadline := time.Now().Add(2 * time.Second)
-			for int(runs.Load()) < len(tc.want) && time.Now().Before(deadline) {
-				time.Sleep(time.Millisecond)
-			}
-			if n := int(runs.Load()); n != len(tc.want) {
-				t.Errorf("got %d runs, want %d", n, len(tc.want))
+			if runs != len(tc.want) {
+				t.Errorf("got %d runs, want %d", runs, len(tc.want))
 			}
 		})
 	}
+}
+
+// stepScheduler drives the run loop from start through n runs of spec and
+// returns their scheduled times and how many times the job ran.
+func stepScheduler(t *testing.T, loc *time.Location, spec string, start time.Time, n int) ([]time.Time, int) {
+	t.Helper()
+	clock := NewFakeClock(start)
+	c := New(WithClock(clock), WithLocation(loc))
+	var runs atomic.Int32
+	if _, err := c.AddFunc(spec, func() { runs.Add(1) }); err != nil {
+		t.Fatal(err)
+	}
+	c.Start()
+	defer c.Stop()
+
+	var got []time.Time
+	for range n {
+		clock.BlockUntil(1)
+		next := c.Entries()[0].Next
+		got = append(got, next)
+		clock.Set(next)
+		deadline := time.Now().Add(2 * time.Second)
+		for c.Entries()[0].Next.Equal(next) && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+	}
+	// Jobs run in their own goroutines; wait for the last one.
+	deadline := time.Now().Add(2 * time.Second)
+	for int(runs.Load()) < n && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	return got, int(runs.Load())
 }
 
 // gapOracle lists the runs of a minute-resolution schedule between start and
@@ -229,43 +244,68 @@ func TestDSTGap_SchedulerRun(t *testing.T) {
 // skipped matching wall time read in the offset before the gap.
 func gapOracle(t *testing.T, s *SpecSchedule, loc *time.Location, start, end time.Time) []time.Time {
 	t.Helper()
-	var runs []time.Time
-	_, lastOff := start.Add(-time.Minute).In(loc).Zone()
-	inGap, gapHasRun := false, false
+	o := &gapWalk{s: s, loc: loc}
+	_, o.lastOff = start.Add(-time.Minute).In(loc).Zone()
 	day := time.Date(start.In(loc).Year(), start.In(loc).Month(), start.In(loc).Day(), 0, 0, 0, 0, time.UTC)
 	for ; !day.After(end.In(loc)); day = day.AddDate(0, 0, 1) {
 		for w := day; w.Before(day.AddDate(0, 0, 1)); w = w.Add(time.Minute) {
-			i := time.Date(w.Year(), w.Month(), w.Day(), w.Hour(), w.Minute(), 0, 0, loc)
-			matches := yearMatches(w.Year(), s.Year) && fieldMatches(int(w.Month()), s.Month) &&
-				dayMatches(s, w) && fieldMatches(w.Hour(), s.Hour) && fieldMatches(w.Minute(), s.Minute) &&
-				fieldMatches(0, s.Second)
-			exists := i.Hour() == w.Hour() && i.Minute() == w.Minute() && i.Day() == w.Day()
-			if !exists {
-				if !inGap {
-					inGap, gapHasRun = true, false
-				}
-				if matches && !gapHasRun && !s.DSTSkip {
-					gapHasRun = true
-					runs = append(runs, time.Date(w.Year(), w.Month(), w.Day(), w.Hour(), w.Minute(), 0, 0, time.FixedZone("", lastOff)))
-				}
-				continue
-			}
-			inGap = false
-			_, lastOff = i.Zone()
-			if matches {
-				runs = append(runs, i)
-				// In a fall-back overlap the wall time exists twice; Next
-				// reports both copies.
-				for _, d := range []time.Duration{-2 * time.Hour, -time.Hour, -30 * time.Minute, 30 * time.Minute, time.Hour, 2 * time.Hour} {
-					if j := i.Add(d); j.Hour() == w.Hour() && j.Minute() == w.Minute() && j.Day() == w.Day() {
-						runs = append(runs, j)
-					}
-				}
-			}
+			o.visit(w)
 		}
 	}
-	slices.SortFunc(runs, func(a, b time.Time) int { return a.Compare(b) })
-	return slices.CompactFunc(runs, time.Time.Equal)
+	slices.SortFunc(o.runs, func(a, b time.Time) int { return a.Compare(b) })
+	return slices.CompactFunc(o.runs, time.Time.Equal)
+}
+
+// gapWalk is gapOracle's state while it walks the wall clock minute by minute.
+type gapWalk struct {
+	s                *SpecSchedule
+	loc              *time.Location
+	lastOff          int  // offset of the last wall time that exists
+	inGap, gapHasRun bool // inside a gap; the gap already has its run
+	runs             []time.Time
+}
+
+// visit handles wall time w, coded in UTC.
+func (o *gapWalk) visit(w time.Time) {
+	s := o.s
+	i := time.Date(w.Year(), w.Month(), w.Day(), w.Hour(), w.Minute(), 0, 0, o.loc)
+	matches := yearMatches(w.Year(), s.Year) && fieldMatches(int(w.Month()), s.Month) &&
+		dayMatches(s, w) && fieldMatches(w.Hour(), s.Hour) && fieldMatches(w.Minute(), s.Minute) &&
+		fieldMatches(0, s.Second)
+	if i.Hour() != w.Hour() || i.Minute() != w.Minute() || i.Day() != w.Day() {
+		o.skipped(w, matches)
+		return
+	}
+	o.inGap = false
+	_, o.lastOff = i.Zone()
+	if matches {
+		o.runs = append(o.runs, i)
+		o.runs = append(o.runs, otherCopies(i, w)...)
+	}
+}
+
+// skipped handles wall time w that a spring-forward gap skips: the first
+// matching one of each gap runs, read in the offset before the gap.
+func (o *gapWalk) skipped(w time.Time, matches bool) {
+	if !o.inGap {
+		o.inGap, o.gapHasRun = true, false
+	}
+	if matches && !o.gapHasRun && !o.s.DSTSkip {
+		o.gapHasRun = true
+		o.runs = append(o.runs, time.Date(w.Year(), w.Month(), w.Day(), w.Hour(), w.Minute(), 0, 0, time.FixedZone("", o.lastOff)))
+	}
+}
+
+// otherCopies returns the other instants that show wall time w, as i does: in
+// a fall-back overlap the wall time exists twice, and Next reports both.
+func otherCopies(i, w time.Time) []time.Time {
+	var copies []time.Time
+	for _, d := range []time.Duration{-2 * time.Hour, -time.Hour, -30 * time.Minute, 30 * time.Minute, time.Hour, 2 * time.Hour} {
+		if j := i.Add(d); j.Hour() == w.Hour() && j.Minute() == w.Minute() && j.Day() == w.Day() {
+			copies = append(copies, j)
+		}
+	}
+	return copies
 }
 
 // TestDSTGapSweep checks Next and Prev from every minute around each gap, and
@@ -342,34 +382,51 @@ func TestDSTGapSweep(t *testing.T) {
 		end := time.Date(z.end.Year(), z.end.Month(), z.end.Day(), z.end.Hour(), 0, 0, 0, loc)
 		for _, spec := range z.specs {
 			t.Run(z.name+"/"+spec, func(t *testing.T) {
-				sched, err := ParseStandard("TZ=" + z.name + " " + spec)
-				if err != nil {
-					t.Fatal(err)
-				}
-				s := sched.(*SpecSchedule)
-				// Pad the oracle by a day on both sides for the runs around the window.
-				oracle := gapOracle(t, s, loc, start.AddDate(0, 0, -1), end.AddDate(0, 0, 1))
-				failures := 0
-				for m := start; m.Before(end) && failures < 5; m = m.Add(time.Minute) {
-					for _, from := range []time.Time{m.Add(-time.Second), m, m.Add(time.Second), m.Add(30 * time.Second)} {
-						i, _ := slices.BinarySearchFunc(oracle, from, func(a, b time.Time) int { return a.Compare(b) })
-						j := i
-						if j < len(oracle) && oracle[j].Equal(from) {
-							j++
-						}
-						if got := s.Next(from); j < len(oracle) && !got.Equal(oracle[j]) {
-							t.Errorf("Next(%v) = %v, want %v", from.In(loc), got.In(loc), oracle[j].In(loc))
-							failures++
-						}
-						if got := s.Prev(from); i > 0 && !got.Equal(oracle[i-1]) {
-							t.Errorf("Prev(%v) = %v, want %v", from.In(loc), got.In(loc), oracle[i-1].In(loc))
-							failures++
-						}
-					}
-				}
+				sweepGapSpec(t, loc, spec, start, end)
 			})
 		}
 	}
+}
+
+// sweepGapSpec checks Next and Prev of spec in loc from every minute between
+// start and end, and from the seconds around it, against gapOracle. It stops
+// after five disagreements.
+func sweepGapSpec(t *testing.T, loc *time.Location, spec string, start, end time.Time) {
+	t.Helper()
+	sched, err := ParseStandard("TZ=" + loc.String() + " " + spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := sched.(*SpecSchedule)
+	// Pad the oracle by a day on both sides for the runs around the window.
+	oracle := gapOracle(t, s, loc, start.AddDate(0, 0, -1), end.AddDate(0, 0, 1))
+	failures := 0
+	for m := start; m.Before(end) && failures < 5; m = m.Add(time.Minute) {
+		for _, from := range []time.Time{m.Add(-time.Second), m, m.Add(time.Second), m.Add(30 * time.Second)} {
+			failures += checkAgainstOracle(t, s, loc, oracle, from)
+		}
+	}
+}
+
+// checkAgainstOracle compares Next and Prev from from with the sorted oracle
+// runs and returns how many of the two disagree.
+func checkAgainstOracle(t *testing.T, s *SpecSchedule, loc *time.Location, oracle []time.Time, from time.Time) int {
+	t.Helper()
+	failures := 0
+	i, found := slices.BinarySearchFunc(oracle, from, func(a, b time.Time) int { return a.Compare(b) })
+	j := i
+	if found {
+		j++
+	}
+	if got := s.Next(from); j < len(oracle) && !got.Equal(oracle[j]) {
+		t.Errorf("Next(%v) = %v, want %v", from.In(loc), got.In(loc), oracle[j].In(loc))
+		failures++
+	}
+	if got := s.Prev(from); i > 0 && !got.Equal(oracle[i-1]) {
+		t.Errorf("Prev(%v) = %v, want %v", from.In(loc), got.In(loc), oracle[i-1].In(loc))
+		failures++
+	}
+	return failures
 }
 
 // TestDSTGapRun_SearchLimit checks that a gap run counts only within the

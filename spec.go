@@ -575,11 +575,37 @@ func (s *SpecSchedule) nextExisting(t time.Time) time.Time {
 	// Use configured MaxSearchYears if set, otherwise use default.
 	yearLimit := t.Year() + s.searchSpan()
 
-WRAP:
-	if t.Year() > yearLimit {
-		return time.Time{}
+	// Each pass that wraps a field around starts again from the year.
+	for t.Year() <= yearLimit {
+		var step searchStep
+		t, added, step = s.advanceDate(t, loc, added, yearLimit)
+		if step == stepExhausted {
+			return time.Time{}
+		}
+		if step == stepWrapped {
+			continue
+		}
+		var wrap bool
+		if t, wrap = s.advanceTime(t, added); !wrap {
+			return t.In(origLocation)
+		}
 	}
+	return time.Time{}
+}
 
+// searchStep is the outcome of moving t to the next or previous matching
+// date.
+type searchStep int
+
+const (
+	stepFound     searchStep = iota // t is on a matching date
+	stepWrapped                     // a field wrapped around; search again
+	stepExhausted                   // the search limit was passed
+)
+
+// advanceDate moves t forward to the first matching year, month and day,
+// resetting the time of day when it moves.
+func (s *SpecSchedule) advanceDate(t time.Time, loc *time.Location, added bool, yearLimit int) (time.Time, bool, searchStep) {
 	// Check year constraint first (if Year field is not wildcard).
 	// Advance to next valid year if current year doesn't match.
 	for !yearMatches(t.Year(), s.Year) {
@@ -589,7 +615,7 @@ WRAP:
 		}
 		t = t.AddDate(1, 0, 0)
 		if t.Year() > yearLimit {
-			return time.Time{}
+			return t, added, stepExhausted
 		}
 	}
 
@@ -606,15 +632,19 @@ WRAP:
 
 		// Wrapped around.
 		if t.Month() == time.January {
-			goto WRAP
+			return t, added, stepWrapped
 		}
 	}
 
-	// Now get a day in that month.
-	//
-	// NOTE: This causes issues for daylight savings regimes where midnight does
-	// not exist.  For example: Sao Paulo has DST that transforms midnight on
-	// 11/3 into 1am. Handle that by noticing when the Hour ends up != 0.
+	return s.advanceDay(t, loc, added)
+}
+
+// advanceDay moves t forward to the first matching day of its month.
+//
+// NOTE: This causes issues for daylight savings regimes where midnight does
+// not exist.  For example: Sao Paulo has DST that transforms midnight on
+// 11/3 into 1am. Handle that by noticing when the Hour ends up != 0.
+func (s *SpecSchedule) advanceDay(t time.Time, loc *time.Location, added bool) (time.Time, bool, searchStep) {
 	for !dayMatches(s, t) {
 		if !added {
 			added = true
@@ -623,27 +653,23 @@ WRAP:
 		t = nextDay(t)
 
 		if t.Day() == 1 {
-			goto WRAP
+			return t, added, stepWrapped
 		}
 	}
+	return t, added, stepFound
+}
 
-	var wrap bool
-	t, added, wrap = advanceHour(t, s.Hour, added)
-	if wrap {
-		goto WRAP
+// advanceTime moves t forward to the first matching hour, minute and second
+// of its day. wrap reports that a field wrapped into the next day.
+func (s *SpecSchedule) advanceTime(t time.Time, added bool) (_ time.Time, wrap bool) {
+	if t, added, wrap = advanceHour(t, s.Hour, added); wrap {
+		return t, true
 	}
-
-	t, added, wrap = advanceMinute(t, s.Minute, added)
-	if wrap {
-		goto WRAP
+	if t, added, wrap = advanceMinute(t, s.Minute, added); wrap {
+		return t, true
 	}
-
 	t, _, wrap = advanceSecond(t, s.Second, added)
-	if wrap {
-		goto WRAP
-	}
-
-	return t.In(origLocation)
+	return t, wrap
 }
 
 // dayMatches returns true if the schedule's day-of-week and day-of-month
@@ -786,11 +812,27 @@ func (s *SpecSchedule) prevExisting(t time.Time) time.Time {
 	// Use configured MaxSearchYears if set, otherwise use default.
 	yearLimit := t.Year() - s.searchSpan()
 
-WRAP:
-	if t.Year() < yearLimit {
-		return time.Time{}
+	// Each pass that wraps a field around starts again from the year.
+	for t.Year() >= yearLimit {
+		var step searchStep
+		t, added, step = s.retreatDate(t, loc, added, yearLimit)
+		if step == stepExhausted {
+			return time.Time{}
+		}
+		if step == stepWrapped {
+			continue
+		}
+		var wrap bool
+		if t, wrap = s.retreatTime(t, added); !wrap {
+			return t.In(origLocation)
+		}
 	}
+	return time.Time{}
+}
 
+// retreatDate moves t back to the last matching year, month and day, setting
+// the time of day to its end when it moves.
+func (s *SpecSchedule) retreatDate(t time.Time, loc *time.Location, added bool, yearLimit int) (time.Time, bool, searchStep) {
 	// Check year constraint first (if Year field is not wildcard).
 	// Retreat to previous valid year if current year doesn't match.
 	for !yearMatches(t.Year(), s.Year) {
@@ -801,7 +843,7 @@ WRAP:
 		}
 		t = t.AddDate(-1, 0, 0)
 		if t.Year() < yearLimit {
-			return time.Time{}
+			return t, added, stepExhausted
 		}
 	}
 
@@ -809,23 +851,22 @@ WRAP:
 	// If it's this month, then do nothing.
 	for !fieldMatches(int(t.Month()), s.Month) {
 		cur := t.Month()
-		if !added {
-			added = true
-			// Set to start of month, then go back 1 second to end of previous month
-			t = time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, loc)
-			t = t.Add(-1 * time.Second)
-		} else {
-			// Go to the first day of current month, then back 1 second
-			t = time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, loc)
-			t = t.Add(-1 * time.Second)
-		}
+		added = true
+		// Go to the first day of the month, then back 1 second to the end of
+		// the previous month.
+		t = time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, loc)
+		t = t.Add(-1 * time.Second)
 		// Check for wrap to previous year
 		if t.Month() > cur {
-			goto WRAP
+			return t, added, stepWrapped
 		}
 	}
 
-	// Now get a day in that month (going backwards).
+	return s.retreatDay(t, loc, added)
+}
+
+// retreatDay moves t back to the last matching day of its month.
+func (s *SpecSchedule) retreatDay(t time.Time, loc *time.Location, added bool) (time.Time, bool, searchStep) {
 	for !dayMatches(s, t) {
 		cur := t.Day()
 		if !added {
@@ -836,28 +877,23 @@ WRAP:
 		t = prevDay(t)
 
 		if t.Day() > cur {
-			goto WRAP
+			return t, added, stepWrapped
 		}
 	}
+	return t, added, stepFound
+}
 
-	// Find matching hour (going backwards)
-	var wrap bool
-	t, added, wrap = retreatHour(t, s.Hour, added)
-	if wrap {
-		goto WRAP
+// retreatTime moves t back to the last matching hour, minute and second of
+// its day. wrap reports that a field wrapped into the previous day.
+func (s *SpecSchedule) retreatTime(t time.Time, added bool) (_ time.Time, wrap bool) {
+	if t, added, wrap = retreatHour(t, s.Hour, added); wrap {
+		return t, true
 	}
-
-	t, added, wrap = retreatMinute(t, s.Minute, added)
-	if wrap {
-		goto WRAP
+	if t, added, wrap = retreatMinute(t, s.Minute, added); wrap {
+		return t, true
 	}
-
 	t, _, wrap = retreatSecond(t, s.Second, added)
-	if wrap {
-		goto WRAP
-	}
-
-	return t.In(origLocation)
+	return t, wrap
 }
 
 // scheduleLocation returns the location whose wall clock the schedule matches
