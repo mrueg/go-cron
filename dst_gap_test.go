@@ -225,8 +225,8 @@ func TestDSTGap_SchedulerRun(t *testing.T) {
 
 // gapOracle lists the runs of a minute-resolution schedule between start and
 // end without the gap code in spec.go: every existing wall time that matches,
-// plus, for each spring-forward gap, the first skipped matching wall time read
-// in the offset before the gap.
+// plus, for each spring-forward gap and unless DSTSkip is set, the first
+// skipped matching wall time read in the offset before the gap.
 func gapOracle(t *testing.T, s *SpecSchedule, loc *time.Location, start, end time.Time) []time.Time {
 	t.Helper()
 	var runs []time.Time
@@ -244,7 +244,7 @@ func gapOracle(t *testing.T, s *SpecSchedule, loc *time.Location, start, end tim
 				if !inGap {
 					inGap, gapHasRun = true, false
 				}
-				if matches && !gapHasRun {
+				if matches && !gapHasRun && !s.DSTSkip {
 					gapHasRun = true
 					runs = append(runs, time.Date(w.Year(), w.Month(), w.Day(), w.Hour(), w.Minute(), 0, 0, time.FixedZone("", lastOff)))
 				}
@@ -429,6 +429,76 @@ func TestNextDSTFallBackFirstCopy(t *testing.T) {
 			}
 			if second := sched.Next(first); !second.Equal(tc.second) {
 				t.Errorf("Next(%v) = %v, want %v", first.In(loc), second.In(loc), tc.second.In(loc))
+			}
+		})
+	}
+}
+
+// TestNextAcrossYearEnds walks Next and Prev over the year ends up to 2096.
+// For years past its stored transitions, ZoneBounds reports a bound at the
+// end of the year whose end can lie before its argument (2040-12-31 00:00
+// UTC with system tzdata, 2028-12-31 with Go's embedded copy); a transition
+// walk that trusts it never advances.
+func TestNextAcrossYearEnds(t *testing.T) {
+	berlin := loadLocation(t, "Europe/Berlin")
+	sched, err := ParseStandard("TZ=Europe/Berlin 0 9 * * *")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan string, 1)
+	go func() {
+		for y := 2026; y <= 2096; y++ {
+			from := time.Date(y, 12, 30, 12, 0, 0, 0, berlin)
+			want := time.Date(y, 12, 31, 9, 0, 0, 0, berlin)
+			if got := sched.Next(from); !got.Equal(want) {
+				done <- fmt.Sprintf("Next(%v) = %v, want %v", from, got, want)
+				return
+			}
+			if got := sched.(ScheduleWithPrev).Prev(want.Add(time.Hour)); !got.Equal(want) {
+				done <- fmt.Sprintf("Prev(%v) = %v, want %v", want.Add(time.Hour), got, want)
+				return
+			}
+		}
+		done <- ""
+	}()
+	select {
+	case msg := <-done:
+		if msg != "" {
+			t.Error(msg)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Next or Prev did not return within 10s")
+	}
+}
+
+// TestNextChathamMinuteHourChange covers a minute step that changes the hour
+// while the minute goes up: Pacific/Chatham moves from 03:44 to 02:45 and
+// from 02:44 to 03:45.
+func TestNextChathamMinuteHourChange(t *testing.T) {
+	chatham := loadLocation(t, "Pacific/Chatham")
+	at := func(y int, mo time.Month, d, h, mi, off int) time.Time {
+		return time.Date(y, mo, d, h, mi, 0, 0, time.FixedZone("", off))
+	}
+	const std, dst = 12*3600 + 45*60, 13*3600 + 45*60
+	tests := []struct {
+		spec    string
+		options ParseOption
+		from    time.Time
+		want    time.Time
+	}{
+		{"50 3 * * *", 0, at(2026, 4, 5, 3, 40, dst), at(2026, 4, 5, 3, 50, std)},
+		{"45-59 3 * * *", 0, at(2026, 4, 5, 3, 40, dst), at(2026, 4, 5, 3, 45, std)},
+		{"50 3 * * *", DSTSkip, at(2026, 4, 5, 3, 40, dst), at(2026, 4, 5, 3, 50, std)},
+		{"50 2 * * *", DSTSkip, at(2026, 9, 27, 2, 40, std), at(2026, 9, 28, 2, 50, dst)},
+	}
+	for _, tc := range tests {
+		t.Run(fmt.Sprintf("%s/DSTSkip=%t", tc.spec, tc.options&DSTSkip != 0), func(t *testing.T) {
+			sched, err := NewParser(Minute | Hour | Dom | Month | Dow | tc.options).Parse("TZ=Pacific/Chatham " + tc.spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := sched.Next(tc.from); !got.Equal(tc.want) {
+				t.Errorf("Next(%v) = %v, want %v", tc.from.In(chatham), got.In(chatham), tc.want.In(chatham))
 			}
 		})
 	}

@@ -282,17 +282,21 @@ func dowConstraintMatches(constraints []DowConstraint, t time.Time) bool {
 // and a 'wrap' flag that is true if the minute rolled past 59 to 0.
 // When wrap is true, the caller must increment the hour and re-validate.
 func advanceMinute(t time.Time, minuteBits uint64, added bool) (time.Time, bool, bool) {
+	var change time.Time // the next zone change, looked up once it matters
+	looked := false
 	for minute := t.Minute(); !fieldMatches(minute, minuteBits); {
 		if !added {
 			added = true
 			t = t.Truncate(time.Minute)
 		}
+		if !looked {
+			change, looked = zoneEndAfter(t), true
+		}
 		t = t.Add(1 * time.Minute)
-		prev := minute
 		minute = t.Minute()
-		// Any new hour starts with a smaller minute: 59 -> 0, and 01:59 ->
-		// 02:30 across a 30-minute DST gap.
-		if minute < prev {
+		// A new hour starts at minute 0, or at a zone change: 01:59 -> 02:30
+		// across a 30-minute gap, 03:44 -> 02:45 in Pacific/Chatham.
+		if minute == 0 || (!change.IsZero() && !t.Before(change)) {
 			return t, added, true // wrap
 		}
 	}
@@ -316,6 +320,23 @@ func advanceHour(t time.Time, hourBits uint64, added bool) (time.Time, bool, boo
 	return t, added, false
 }
 
+// zoneEndAfter returns the end of the zone period that contains t: the first
+// zone change after t, or the zero time when none follows. For years past its
+// stored transitions, ZoneBounds reports bounds at year ends, and for a time
+// just after such a bound it returns an end that is not after the time (for
+// example 2040-12-31 00:00 UTC); zoneEndAfter steps over it.
+func zoneEndAfter(t time.Time) time.Time {
+	probe := t
+	for range 48 {
+		_, end := probe.ZoneBounds()
+		if end.IsZero() || end.After(t) {
+			return end
+		}
+		probe = probe.Add(time.Hour)
+	}
+	return time.Time{}
+}
+
 // nextHourStart returns the start of the wall-clock hour after t's hour.
 // When that hour starts in a DST spring-forward gap, it returns the end of
 // the gap (02:30 for a gap from 02:00 to 02:30). When it starts twice because
@@ -335,7 +356,7 @@ func nextHourStart(t time.Time) time.Time {
 	// swallowed the full hour (02:00 -> 02:30), or a fall-back at a minute
 	// other than 00 that starts an hour again (Chatham: 03:44:59 +1345 ->
 	// 02:45 +1245).
-	if _, end := t.ZoneBounds(); !end.IsZero() && end.Before(next) && end.Hour() != t.Hour() {
+	if end := zoneEndAfter(t); !end.IsZero() && end.Before(next) && end.Hour() != t.Hour() {
 		return end
 	}
 	return next
@@ -867,17 +888,17 @@ func (s *SpecSchedule) nextGapRun(t, next time.Time) (time.Time, bool) {
 	}
 	// The run for the gap that opened the zone in effect at t can still lie
 	// after t (for 01:59:59 -> 03:00, a 02:30 job runs at 03:30).
-	tr, end := t.In(loc).ZoneBounds()
-	if tr.IsZero() || !t.Before(tr.Add(gapLength(tr, loc))) {
+	tr, _ := t.In(loc).ZoneBounds()
+	if tr.IsZero() || tr.After(t) || !t.Before(tr.Add(gapLength(tr, loc))) {
 		// A gap run lies before the end of its gap; past it, only later
 		// transitions can hold a run.
-		tr = end
+		tr = zoneEndAfter(t.In(loc))
 	}
 	for !tr.IsZero() && tr.Before(limit) {
 		if run, ok := s.gapRun(tr, loc); ok && run.After(t) && run.Before(limit) {
 			return run, true
 		}
-		_, tr = tr.In(loc).ZoneBounds()
+		tr = zoneEndAfter(tr.In(loc))
 	}
 	return time.Time{}, false
 }
