@@ -1162,25 +1162,30 @@ func (c *Cron) scheduleLocation(sched Schedule) *time.Location {
 // An interval (@every) is exempt: one interval after 01:30 EDT is 01:30 EST,
 // a regular run that only shows the same wall-clock time.
 //
-// A spec with a restricted hour field also skips next when it is the second
-// copy of a wall-clock time that the entry fired in the first copy of the
-// hour (fired), so every time in the repeated hour runs once (issue #446). A
-// spec with "*" in the hour field keeps the comparison with prev alone, so
-// "* * * * *" still runs in both copies of the hour.
+// A spec that also matches the wall-clock time one repeat length before or
+// after next runs in every such stretch of the day, for example every 5
+// minutes or every hour. Its second copy is a regular run, so it is exempt
+// too: "*/5 0-6 * * *" and "0 * * * *" keep their rhythm through both copies.
+// Any other spec runs each wall-clock time once: it also skips next when the
+// entry fired that time in the first copy (fired), so "0,30 1 * * *" runs
+// 01:00 and 01:30 once each (issue #446) and "0 */2 * * *" keeps its two-hour
+// spacing.
 func (c *Cron) isFallBackRepeat(sched Schedule, fired []time.Time, prev, next time.Time) bool {
 	var u *UnionSchedule
 	switch s := sched.(type) {
 	case ConstantDelaySchedule, *ConstantDelaySchedule, AlignedSchedule, *AlignedSchedule:
 		return false
+	case *SpecSchedule:
+		loc := c.scheduleLocation(s)
+		repeated := secondCopyRepeat(next, loc)
+		if repeated == 0 || recursAcrossRepeat(s, next.In(loc), repeated) {
+			return false
+		}
+		return isDSTFallBackDuplicate(prev, next, loc) || slices.ContainsFunc(fired, next.Add(-repeated).Equal)
 	case *UnionSchedule:
 		u = s
 	default:
-		loc := c.scheduleLocation(sched)
-		if isDSTFallBackDuplicate(prev, next, loc) {
-			return true
-		}
-		ss, ok := sched.(*SpecSchedule)
-		return ok && ss.Hour&starBit == 0 && repeatsFiredTime(fired, next, loc)
+		return isDSTFallBackDuplicate(prev, next, c.scheduleLocation(sched))
 	}
 	repeat := false
 	for _, s := range u.Schedules {
@@ -1195,24 +1200,34 @@ func (c *Cron) isFallBackRepeat(sched Schedule, fired []time.Time, prev, next ti
 	return repeat
 }
 
-// repeatsFiredTime reports whether next lies in the second copy of a DST
-// fall-back hour in loc and fired holds the first copy of next's wall-clock
-// time (issue #446).
-func repeatsFiredTime(fired []time.Time, next time.Time, loc *time.Location) bool {
-	if len(fired) == 0 || next.IsZero() || loc == nil {
-		return false
+// secondCopyRepeat returns how long the clock repeats when next lies in the
+// second copy of a DST fall-back period in loc (one hour in most zones, 30
+// minutes on Lord Howe Island, two hours on Antarctica/Troll), and zero
+// otherwise.
+func secondCopyRepeat(next time.Time, loc *time.Location) time.Duration {
+	if next.IsZero() || loc == nil {
+		return 0
 	}
 	tr, _ := next.In(loc).ZoneBounds()
 	if tr.IsZero() {
-		return false
+		return 0
 	}
 	_, before := tr.Add(-time.Nanosecond).In(loc).Zone()
 	_, after := tr.In(loc).Zone()
 	repeated := time.Duration(before-after) * time.Second
 	if repeated <= 0 || !next.Before(tr.Add(repeated)) {
-		return false
+		return 0
 	}
-	return slices.ContainsFunc(fired, next.Add(-repeated).Equal)
+	return repeated
+}
+
+// recursAcrossRepeat reports whether s also matches the wall-clock time of
+// next shifted by repeated in either direction, on a calendar without DST.
+// Such a spec runs at least once in every stretch of that length around next,
+// so the second copy of the clock holds a regular run of it.
+func recursAcrossRepeat(s *SpecSchedule, next time.Time, repeated time.Duration) bool {
+	wall := time.Date(next.Year(), next.Month(), next.Day(), next.Hour(), next.Minute(), next.Second(), 0, time.UTC)
+	return s.matchesWall(wall.Add(-repeated)) || s.matchesWall(wall.Add(repeated))
 }
 
 // inFallBackFirstCopy reports whether t lies in the first copy of a DST

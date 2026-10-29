@@ -330,9 +330,10 @@ Spring Forward (clocks skip an hour):
   - Jobs scheduled exactly at the transition boundary may run immediately
 
 Fall Back (clocks repeat an hour):
-  - Jobs on a cron expression run only during the first occurrence of the repeated hour
-  - The second occurrence is skipped to prevent duplicate runs
-  - ⚠️ Note: This means jobs scheduled in the repeated hour run once, not twice
+  - A job at fixed times (30 1 * * *, 0,30 1 * * *) runs each time once, during
+    the first occurrence of the repeated hour
+  - A job that runs every hour or more often (0 * * * *, or every 5 minutes)
+    keeps its rhythm and runs in both occurrences
   - Intervals (@every, @every_start, @every_aligned) count elapsed time and run
     in both occurrences
 
@@ -347,7 +348,8 @@ Midnight Doesn't Exist:
 
 ⚠️ Important Edge Cases:
   - Jobs during spring-forward gap: Run immediately after transition
-  - Jobs during fall-back repeat: Run only on first occurrence
+  - Jobs during fall-back repeat: fixed times run once, hourly or more frequent
+    jobs keep their rhythm
   - Multi-timezone systems: Each job uses its configured timezone independently
   - Leap seconds: Not handled; use NTP-synced systems for best results
 

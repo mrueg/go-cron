@@ -262,7 +262,10 @@ See [DST_HANDLING.md](DST_HANDLING.md) for details.
 
 During "fall back" (e.g., 2 AM → 1 AM), the 1:xx hour occurs twice.
 
-**go-cron behavior:** Job runs once, during the first occurrence.
+**go-cron behavior:** A job at a fixed time, such as `30 1 * * *`, runs once,
+during the first occurrence. A job that runs every hour or more often, such as
+`0 * * * *` or `*/5 * * * *`, keeps its rhythm and runs in both occurrences
+(see [ADR-027](adr/ADR-027-fall-back-by-rhythm.md)).
 
 ---
 

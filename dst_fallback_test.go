@@ -37,35 +37,28 @@ func fallBackRuns(t *testing.T, loc *time.Location, start time.Time, n int, add 
 	return runs
 }
 
-// TestDSTFallBack_RestrictedHourRunsOnce pins issue #446: with a restricted
-// hour field, every wall time in the repeated fall-back hour runs once, also
-// when the spec has several of them. A spec with "*" in the hour field keeps
-// the guard that compares with the run just fired (ADR-016).
-func TestDSTFallBack_RestrictedHourRunsOnce(t *testing.T) {
-	ny, err := time.LoadLocation("America/New_York")
-	if err != nil {
-		t.Skip("America/New_York timezone not available")
+// every returns n times from start, step apart in real time.
+func every(start time.Time, step time.Duration, n int) []time.Time {
+	runs := make([]time.Time, n)
+	for i := range runs {
+		runs[i] = start.Add(time.Duration(i) * step)
 	}
-	edt := func(h, m int) time.Time { return time.Date(2026, 11, 1, h, m, 0, 0, time.FixedZone("EDT", -4*3600)) }
-	est := func(d, h, m int) time.Time { return time.Date(2026, 11, d, h, m, 0, 0, time.FixedZone("EST", -5*3600)) }
-	noon := time.Date(2026, 10, 31, 12, 0, 0, 0, ny)
-	lateEvening := time.Date(2026, 10, 31, 23, 59, 0, 0, ny)
-	tests := []struct {
-		spec string
-		from time.Time
-		want []time.Time
-	}{
-		{"0,30 1 * * *", noon, []time.Time{edt(1, 0), edt(1, 30), est(2, 1, 0)}},
-		{"*/20 1 * * *", noon, []time.Time{edt(1, 0), edt(1, 20), edt(1, 40), est(2, 1, 0)}},
-		{"30 1-3 * * *", noon, []time.Time{edt(1, 30), est(1, 2, 30), est(1, 3, 30)}},
-		{"30 1 * * *", noon, []time.Time{edt(1, 30), est(2, 1, 30)}},
-		// Wildcard hour: unchanged.
-		{"0 * * * *", lateEvening, []time.Time{edt(0, 0), edt(1, 0), est(1, 2, 0)}},
-		{"*/30 * * * *", lateEvening, []time.Time{edt(0, 0), edt(0, 30), edt(1, 0), edt(1, 30), est(1, 1, 0), est(1, 1, 30)}},
-	}
+	return runs
+}
+
+// fallBackCase is one spec driven through a fall-back night.
+type fallBackCase struct {
+	spec string
+	from time.Time
+	want []time.Time
+}
+
+// checkFallBackCases runs each case through the run loop in loc.
+func checkFallBackCases(t *testing.T, loc *time.Location, tests []fallBackCase) {
+	t.Helper()
 	for _, tc := range tests {
 		t.Run(tc.spec, func(t *testing.T) {
-			got := fallBackRuns(t, ny, tc.from, len(tc.want), func(c *Cron) error {
+			got := fallBackRuns(t, loc, tc.from, len(tc.want), func(c *Cron) error {
 				_, err := c.AddFunc(tc.spec, func() {})
 				return err
 			})
@@ -74,8 +67,270 @@ func TestDSTFallBack_RestrictedHourRunsOnce(t *testing.T) {
 			}
 			for i := range tc.want {
 				if !got[i].Equal(tc.want[i]) {
-					t.Errorf("run %d = %v, want %v", i, got[i].In(ny), tc.want[i].In(ny))
+					t.Errorf("run %d = %v, want %v", i, got[i].In(loc), tc.want[i].In(loc))
 				}
+			}
+		})
+	}
+}
+
+// TestDSTFallBack_RunsPerRhythm pins how often a spec runs in the repeated
+// fall-back hour (issue #446, ADR-016). A spec that also matches one hour
+// earlier or later runs every hour or more often there, and keeps that rhythm
+// through both copies. Any other spec runs each wall-clock time once that day.
+func TestDSTFallBack_RunsPerRhythm(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skip("America/New_York timezone not available")
+	}
+	edtZone, estZone := time.FixedZone("EDT", -4*3600), time.FixedZone("EST", -5*3600)
+	edt := func(h, m int) time.Time { return time.Date(2026, 11, 1, h, m, 0, 0, edtZone) }
+	est := func(d, h, m int) time.Time { return time.Date(2026, 11, d, h, m, 0, 0, estZone) }
+	noon := time.Date(2026, 10, 31, 12, 0, 0, 0, ny)
+	lateEvening := time.Date(2026, 10, 31, 23, 59, 0, 0, ny)
+	checkFallBackCases(t, ny, []fallBackCase{
+		// Fixed times: each wall-clock time once.
+		{"0,30 1 * * *", noon, []time.Time{edt(1, 0), edt(1, 30), est(2, 1, 0)}},
+		{"*/20 1 * * *", noon, []time.Time{edt(1, 0), edt(1, 20), edt(1, 40), est(2, 1, 0)}},
+		{"30 1 * * *", noon, []time.Time{edt(1, 30), est(2, 1, 30)}},
+		{"@daily", noon, []time.Time{edt(0, 0), est(2, 0, 0)}},
+		// Every 5 minutes: 5 minutes apart in real time through both copies,
+		// from 00:00 EDT to 02:00 EST.
+		{"*/5 0-6 * * *", lateEvening, every(edt(0, 0), 5*time.Minute, 37)},
+		{"*/30 * * * *", lateEvening, every(edt(0, 0), 30*time.Minute, 7)},
+		// Every hour: one hour apart in real time.
+		{"0 * * * *", lateEvening, every(edt(0, 0), time.Hour, 4)},
+		{"@hourly", lateEvening, every(edt(0, 0), time.Hour, 4)},
+		{"0 0-6 * * *", lateEvening, every(edt(0, 0), time.Hour, 4)},
+		{"30 1-3 * * *", noon, every(edt(1, 30), time.Hour, 4)},
+		{"0 1,2 * * *", noon, []time.Time{edt(1, 0), est(1, 1, 0), est(1, 2, 0), est(2, 1, 0)}},
+	})
+}
+
+// TestDSTFallBack_RunsPerRhythmOtherZones covers a repeated hour at 02:00
+// (Berlin), a repeated half hour (Lord Howe Island) and two repeated hours
+// (Antarctica/Troll).
+func TestDSTFallBack_RunsPerRhythmOtherZones(t *testing.T) {
+	t.Run("Berlin", func(t *testing.T) {
+		berlin, err := time.LoadLocation("Europe/Berlin")
+		if err != nil {
+			t.Skip("Europe/Berlin timezone not available")
+		}
+		cest, cet := time.FixedZone("CEST", 2*3600), time.FixedZone("CET", 3600)
+		from := time.Date(2026, 10, 24, 23, 30, 0, 0, berlin)
+		checkFallBackCases(t, berlin, []fallBackCase{
+			// Every two hours: 02:00 CET would come one hour after 02:00 CEST.
+			{"0 */2 * * *", from, []time.Time{
+				time.Date(2026, 10, 25, 0, 0, 0, 0, cest),
+				time.Date(2026, 10, 25, 2, 0, 0, 0, cest),
+				time.Date(2026, 10, 25, 4, 0, 0, 0, cet),
+			}},
+			{"30 2 * * *", from, []time.Time{
+				time.Date(2026, 10, 25, 2, 30, 0, 0, cest),
+				time.Date(2026, 10, 26, 2, 30, 0, 0, cet),
+			}},
+			{"0 * * * *", from, every(time.Date(2026, 10, 25, 0, 0, 0, 0, cest), time.Hour, 5)},
+		})
+	})
+	t.Run("Lord_Howe", func(t *testing.T) {
+		lh, err := time.LoadLocation("Australia/Lord_Howe")
+		if err != nil {
+			t.Skip("Australia/Lord_Howe timezone not available")
+		}
+		// 02:00 +11 becomes 01:30 +1030 on 2026-04-05.
+		dst, std := time.FixedZone("+11", 11*3600), time.FixedZone("+1030", 10*3600+1800)
+		from := time.Date(2026, 4, 5, 0, 59, 0, 0, lh)
+		checkFallBackCases(t, lh, []fallBackCase{
+			{"*/30 * * * *", from, every(time.Date(2026, 4, 5, 1, 0, 0, 0, dst), 30*time.Minute, 4)},
+			{"*/10 * * * *", from, every(time.Date(2026, 4, 5, 1, 0, 0, 0, dst), 10*time.Minute, 10)},
+			{"45 1 * * *", from, []time.Time{
+				time.Date(2026, 4, 5, 1, 45, 0, 0, dst),
+				time.Date(2026, 4, 6, 1, 45, 0, 0, std),
+			}},
+			// Known limit: a 20-minute rhythm does not repeat every 30
+			// minutes, so 01:40 runs once.
+			{"*/20 * * * *", from, []time.Time{
+				time.Date(2026, 4, 5, 1, 0, 0, 0, dst),
+				time.Date(2026, 4, 5, 1, 20, 0, 0, dst),
+				time.Date(2026, 4, 5, 1, 40, 0, 0, dst),
+				time.Date(2026, 4, 5, 2, 0, 0, 0, std),
+			}},
+		})
+	})
+	t.Run("Troll", func(t *testing.T) {
+		troll, err := time.LoadLocation("Antarctica/Troll")
+		if err != nil {
+			t.Skip("Antarctica/Troll timezone not available")
+		}
+		// 03:00 +02 becomes 01:00 +00 on 2026-10-25; 01:00 to 03:00 repeats.
+		from := time.Date(2026, 10, 24, 23, 30, 0, 0, troll)
+		start := time.Date(2026, 10, 25, 0, 0, 0, 0, time.FixedZone("+02", 2*3600))
+		checkFallBackCases(t, troll, []fallBackCase{
+			{"0 */2 * * *", from, every(start, 2*time.Hour, 4)},
+			{"0 * * * *", from, every(start, time.Hour, 6)},
+			{"30 2 * * *", from, []time.Time{
+				time.Date(2026, 10, 25, 2, 30, 0, 0, time.FixedZone("+02", 2*3600)),
+				time.Date(2026, 10, 26, 2, 30, 0, 0, time.UTC),
+			}},
+		})
+	})
+}
+
+// TestDSTFallBack_PrevWithoutRecord checks a fixed time whose first copy is
+// known only from Prev (WithPrev, a restored history), not from the record of
+// first-copy runs: the second copy repeats the run just fired and is skipped.
+func TestDSTFallBack_PrevWithoutRecord(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skip("America/New_York timezone not available")
+	}
+	edt, est := time.FixedZone("EDT", -4*3600), time.FixedZone("EST", -5*3600)
+	got := fallBackRuns(t, ny, time.Date(2026, 11, 1, 1, 40, 0, 0, edt), 1, func(c *Cron) error {
+		_, err := c.AddFunc("30 1 * * *", func() {}, WithPrev(time.Date(2026, 11, 1, 1, 30, 0, 0, edt)))
+		return err
+	})
+	equalRuns(t, got, []time.Time{time.Date(2026, 11, 2, 1, 30, 0, 0, est)})
+}
+
+// customSchedule is a Schedule that is not a SpecSchedule.
+type customSchedule struct{ s Schedule }
+
+func (c customSchedule) Next(t time.Time) time.Time { return c.s.Next(t) }
+
+// TestDSTFallBack_CustomSchedule checks that a Schedule other than a
+// SpecSchedule keeps the comparison with the run just fired.
+func TestDSTFallBack_CustomSchedule(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skip("America/New_York timezone not available")
+	}
+	edt, est := time.FixedZone("EDT", -4*3600), time.FixedZone("EST", -5*3600)
+	got := fallBackRuns(t, ny, time.Date(2026, 11, 1, 1, 0, 0, 0, edt), 2, func(c *Cron) error {
+		s, err := ParseStandard("30 1 * * *")
+		if err != nil {
+			return err
+		}
+		c.Schedule(customSchedule{s}, FuncJob(func() {}))
+		return nil
+	})
+	equalRuns(t, got, []time.Time{
+		time.Date(2026, 11, 1, 1, 30, 0, 0, edt),
+		time.Date(2026, 11, 2, 1, 30, 0, 0, est),
+	})
+}
+
+// TestDSTFallBack_UnionMemberRhythm checks the rule per union member: the
+// hourly member runs in the second copy, the daily member does not.
+func TestDSTFallBack_UnionMemberRhythm(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skip("America/New_York timezone not available")
+	}
+	edt, est := time.FixedZone("EDT", -4*3600), time.FixedZone("EST", -5*3600)
+	got := fallBackRuns(t, ny, time.Date(2026, 11, 1, 0, 30, 0, 0, edt), 4, func(c *Cron) error {
+		u, err := ParseUnion(NewParser(Minute|Hour|Dom|Month|Dow), "0 * * * *", "30 1 * * *")
+		if err != nil {
+			return err
+		}
+		c.Schedule(u, FuncJob(func() {}))
+		return nil
+	})
+	equalRuns(t, got, []time.Time{
+		time.Date(2026, 11, 1, 1, 0, 0, 0, edt),
+		time.Date(2026, 11, 1, 1, 30, 0, 0, edt),
+		time.Date(2026, 11, 1, 1, 0, 0, 0, est),
+		time.Date(2026, 11, 1, 2, 0, 0, 0, est),
+	})
+}
+
+// TestRecursAcrossRepeat pins the rhythm test on wall-clock times, including
+// shifts across midnight and the day fields.
+func TestRecursAcrossRepeat(t *testing.T) {
+	p := NewParser(Minute | Hour | Dom | Month | Dow | DomL)
+	monday := time.Date(2026, 11, 2, 0, 30, 0, 0, time.UTC) // a Monday
+	last := time.Date(2026, 10, 31, 1, 0, 0, 0, time.UTC)   // last day of October
+	tests := []struct {
+		spec     string
+		at       time.Time
+		repeated time.Duration
+		want     bool
+	}{
+		{"30 1 * * 1", monday, time.Hour, true},    // one hour later, same Monday
+		{"30 23 * * 0", monday, time.Hour, true},   // one hour earlier, Sunday
+		{"30 0 * * 1", monday, time.Hour, false},   // only 00:30
+		{"30 23 * * 1", monday, time.Hour, false},  // Sunday 23:30 is not a Monday
+		{"0,30 0 * * *", monday, time.Hour, false}, // 30 minutes is not a repeat length
+		{"0,30 0 * * *", monday, 30 * time.Minute, true},
+		{"0 0-6 L * *", last, time.Hour, true},
+		{"0 1 L * *", last, time.Hour, false},
+		{"0 0 1 11 *", last.Add(22 * time.Hour), time.Hour, true}, // into November
+		{"0 */2 * * *", last.Add(time.Hour), 2 * time.Hour, true},
+	}
+	full := NewParser(Second | Minute | Hour | Dom | Month | Dow | Year)
+	newYear := time.Date(2026, 12, 31, 23, 0, 0, 0, time.UTC)
+	more := []struct {
+		spec     string
+		at       time.Time
+		repeated time.Duration
+		want     bool
+	}{
+		{"0 30 * * * * *", monday, time.Hour, true},
+		{"0 15 * * * * *", monday, time.Hour, false},  // minute 15
+		{"15 30 * * * * *", monday, time.Hour, false}, // second 15
+		{"0 0 0 1 1 * 2027", newYear, time.Hour, true},
+		{"0 0 0 1 1 * 2026", newYear, time.Hour, false}, // 2027-01-01 is not in 2026
+		{"0 0 0 1 12 * *", last.Add(22 * time.Hour), time.Hour, false},
+	}
+	for _, tc := range more {
+		t.Run(tc.spec, func(t *testing.T) {
+			s, err := full.Parse(tc.spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := recursAcrossRepeat(s.(*SpecSchedule), tc.at, tc.repeated); got != tc.want {
+				t.Errorf("recursAcrossRepeat(%q, %v, %v) = %v, want %v", tc.spec, tc.at, tc.repeated, got, tc.want)
+			}
+		})
+	}
+	for _, tc := range tests {
+		t.Run(tc.spec, func(t *testing.T) {
+			s, err := p.Parse(tc.spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := recursAcrossRepeat(s.(*SpecSchedule), tc.at, tc.repeated); got != tc.want {
+				t.Errorf("recursAcrossRepeat(%q, %v, %v) = %v, want %v", tc.spec, tc.at, tc.repeated, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSecondCopyRepeat pins the repeat length reported for the second copy.
+func TestSecondCopyRepeat(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skip("America/New_York timezone not available")
+	}
+	edt, est := time.FixedZone("EDT", -4*3600), time.FixedZone("EST", -5*3600)
+	tests := []struct {
+		name string
+		t    time.Time
+		loc  *time.Location
+		want time.Duration
+	}{
+		{"second copy", time.Date(2026, 11, 1, 1, 30, 0, 0, est), ny, time.Hour},
+		{"start of second copy", time.Date(2026, 11, 1, 1, 0, 0, 0, est), ny, time.Hour},
+		{"end of second copy", time.Date(2026, 11, 1, 2, 0, 0, 0, est), ny, 0},
+		{"first copy", time.Date(2026, 11, 1, 1, 30, 0, 0, edt), ny, 0},
+		{"spring-forward zone", time.Date(2026, 3, 8, 3, 30, 0, 0, ny), ny, 0},
+		{"zone without transitions", time.Date(2026, 11, 1, 5, 30, 0, 0, time.UTC), time.UTC, 0},
+		{"zero time", time.Time{}, ny, 0},
+		{"nil location", time.Date(2026, 11, 1, 1, 30, 0, 0, est), nil, 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := secondCopyRepeat(tc.t, tc.loc); got != tc.want {
+				t.Errorf("secondCopyRepeat(%v) = %v, want %v", tc.t, got, tc.want)
 			}
 		})
 	}

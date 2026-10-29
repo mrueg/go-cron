@@ -1,7 +1,8 @@
 # ADR-016: DST Handling via Normalization
 
 ## Status
-Accepted
+Accepted. The fall-back part is superseded by
+[ADR-027](ADR-027-fall-back-by-rhythm.md) (2026-10-29).
 
 **Update 2026-10-25:** [ADR-026](ADR-026-aligned-intervals.md) exempts
 `@every` intervals (`ConstantDelaySchedule`, `AlignedSchedule`) from the
@@ -82,20 +83,12 @@ Jobs during the repeated hour run once, during the first occurrence:
 
 The scheduler enforces this rule, not the schedule: `Schedule.Next()` returns both occurrences, and a caller that uses `Next()` directly sees both (see "Preventing Duplicate Execution During Fall-Back" below). Pinned by `TestDSTFallBack_SchedulerDedup` in `cron_test.go`.
 
-**Update 2026-10-29:** With a restricted hour field, every wall-clock time in
-the repeated fall-back hour runs once, also when a spec has several of them
-([#446](https://github.com/netresearch/go-cron/issues/446)). Before,
-`0,30 1 * * *` ran 01:00 and 01:30 in both copies of the hour, because the
-guard compared the next time only with the run just fired. The scheduler now
-also skips a time in the second copy when the entry fired its first copy; each
-entry records the scheduled times it fired in the first copy
-(`recordFallBackRun` and `repeatsFiredTime` in `cron.go`). An hour field of `*` or
-`*/1` counts as a wildcard; any other hour field counts as restricted, also
-`0-23`. Specs with `*` in the hour field keep the
-comparison with the run just fired alone, so `* * * * *` and `*/30 * * * *`
-still run in both copies (the every-minute note under Industry Context stays
-true). Pinned by `TestDSTFallBack_RestrictedHourRunsOnce` in
-`dst_fallback_test.go`.
+**Update 2026-10-29:** [ADR-027](ADR-027-fall-back-by-rhythm.md) replaces
+this section. A spec that runs every hour or more often keeps its rhythm
+through both copies of the repeated hour (`0 * * * *` runs 01:00 EDT and 01:00
+EST); any other spec runs each wall-clock time once that day, also with several
+times in the repeated hour
+([#446](https://github.com/netresearch/go-cron/issues/446)).
 
 ## Consequences
 

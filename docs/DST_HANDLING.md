@@ -59,7 +59,7 @@ To keep the robfig/cron behavior, add the `DSTSkip` parse option (or
 
 ## Fall Back (Clock Repeats Hour)
 
-When DST causes clocks to fall back (e.g., 2:00 AM becomes 1:00 AM), an hour occurs twice. The scheduler detects and skips the second occurrence to prevent duplicate execution (see `isDSTFallBackDuplicate` in `cron.go` and ADR-016).
+When DST causes clocks to fall back (e.g., 2:00 AM becomes 1:00 AM), an hour occurs twice. The scheduler decides per spec how often it runs in the second occurrence ([ADR-027](adr/ADR-027-fall-back-by-rhythm.md)): a job that runs every hour or more often keeps its rhythm, and a job at fixed times runs each time once that day.
 
 ### Example: US Eastern Time
 
@@ -75,42 +75,44 @@ The hour 1:00-1:59 AM occurs twice
 | `0 0 2 * * *` (2:00 AM) | Runs once at 2:00 AM EST |
 | `0 0,30 1 * * *` (1:00 and 1:30 AM) | 1:00 and 1:30 EDT, once each |
 | `0 */20 1 * * *` (1:00, 1:20, 1:40 AM) | 1:00, 1:20 and 1:40 EDT, once each |
-| `0 */30 * * * *` (every 30 minutes) | Runs in both copies of the hour (wildcard hour, see below) |
+| `0 */5 0-6 * * *` (every 5 minutes at night) | Every 5 minutes through both copies of the hour |
+| `0 0 * * * *` (every hour) | 1:00 EDT and 1:00 EST, one hour apart; 25 runs that day |
+| `0 30 1-3 * * *` (every hour at :30, 1:30 to 3:30) | 1:30 EDT, 1:30 EST, 2:30 EST, 3:30 EST |
+| `0 0 */2 * * *` in Europe/Berlin (02:00 repeats) | 00:00 and 02:00 CEST, 04:00 CET: 02:00 CET would come one hour after 02:00 CEST |
 
 ### Important Notes
 
-- Jobs on a cron expression run **once** during fall-back transitions (not twice)
-- The first occurrence (before transition) is used
+- The rule is about how often a job runs, see
+  [ADR-027](adr/ADR-027-fall-back-by-rhythm.md). For a time in the second copy
+  of the clock, the scheduler checks whether the spec also matches the
+  wall-clock time one repeat length earlier or later on a calendar without DST
+  (`recursAcrossRepeat()` in `cron.go`). The repeat length is one hour in most
+  zones, 30 minutes on Lord Howe Island and two hours on Antarctica/Troll.
+  - If the spec matches, it runs in every such stretch of the day, so the
+    second copy holds a regular run: it runs. This covers every-few-minutes and
+    hourly jobs, `0-23` as well as `*` in the hour field.
+  - If not, the spec runs at fixed times, and each runs once that day. The time
+    is skipped when the entry fired it in the first copy or when it repeats the
+    wall-clock time of the run just fired (`isDSTFallBackDuplicate()`).
 - The scheduler's guard (`skipFallBackRepeats()`, `isFallBackRepeat()`) runs
   whenever the scheduler computes the next time of an entry: after a run, at
   start, when an entry is added or updated, while it is paused, after the clock
-  moved back, and for the catch-up list of `WithMissedPolicy`. It skips a time in
-  the second copy of the hour when:
-  - it repeats the wall-clock time of the run just fired
-    (`isDSTFallBackDuplicate()`), for every cron expression; or
-  - the spec restricts the hour field and the entry fired that wall-clock time
-    in the first copy (`repeatsFiredTime()`). Each entry records the scheduled
-    times it fired in the first copy. A time it did not fire there (the entry was
-    added later, paused, or the process was asleep) runs in the second copy. The
-    record stays across `UpdateEntry` and `UpsertJob`, so a config reload in the
-    repeated hour does not run a time twice. Catch-up runs count as runs of their
-    time. The record lives in memory only: after a process restart inside the
-    repeated hour, the times of the first copy run again in the second copy.
-- An hour field of `*` or `*/1` counts as a wildcard. Any other hour field counts
-  as restricted, also `0-23` and `*/2`.
-  A frequent spec with a restricted hour, such as `*/5 0-6 * * *`, therefore has
-  no run in the second copy of the hour: it runs every 5 minutes through the
-  first copy and continues at 02:00.
-- Jobs whose hour field is `*` keep only the first rule. Jobs that fire every
-  minute (e.g., `* * * * *`) or several times an hour (e.g., `*/30 * * * *`) run in
-  both copies of the hour, because the next time never repeats the run just fired.
-  Jobs with a fixed minute but wildcard hour (e.g., `0 * * * *`) ARE deduplicated —
-  stricter than Vixie cron (which runs them twice) but consistent with Quartz's
-  "once per wall-clock time" behavior
+  moved back, and for the catch-up list of `WithMissedPolicy`.
+- Each entry records the scheduled times it fired in the first copy. A fixed
+  time it did not fire there (the entry was added later, paused, or the process
+  was asleep) runs in the second copy. The record stays across `UpdateEntry` and
+  `UpsertJob`, so a config reload in the repeated hour does not run a time
+  twice. Catch-up runs count as runs of their time. The record lives in memory
+  only: after a process restart inside the repeated hour, the fixed times of the
+  first copy run again in the second copy.
+- A spec that matches every hour only in a window runs hourly through both
+  copies: `0 1,2 * * *` runs 01:00 EDT, 01:00 EST and 02:00 EST.
+- On Lord Howe Island the clock repeats 30 minutes. A rhythm that does not
+  repeat every 30 minutes, such as `*/20 * * * *`, runs 01:40 once there.
 - Intervals (`@every`, `@every_start`, `@every_aligned`) are not deduplicated: they
   count elapsed time, not wall-clock time. `@every 1h` runs at 01:30 EDT and again
   one hour later at 01:30 EST (see ADR-026)
-- This aligns with [RFC 5545 Section 3.3.5](https://datatracker.ietf.org/doc/html/rfc5545#section-3.3.5):
+- For fixed times this aligns with [RFC 5545 Section 3.3.5](https://datatracker.ietf.org/doc/html/rfc5545#section-3.3.5):
   *"If the local time described occurs more than once [...] the DATE-TIME value
   refers to the first occurrence"*
 
