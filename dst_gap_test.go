@@ -1,0 +1,323 @@
+package cron
+
+import (
+	"fmt"
+	"slices"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+func loadLocation(t *testing.T, name string) *time.Location {
+	t.Helper()
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		t.Skipf("%s timezone not available", name)
+	}
+	return loc
+}
+
+// TestNextDSTGapRun pins the run that Next returns for a time skipped by a
+// spring-forward gap of any length and at any hour: the time shifted by the
+// length of the gap, as for the one-hour gap at 02:00 (ADR-016).
+func TestNextDSTGapRun(t *testing.T) {
+	lordHowe := loadLocation(t, "Australia/Lord_Howe") // 2026-10-04 02:00 -> 02:30
+	santiago := loadLocation(t, "America/Santiago")    // 2026-09-06 00:00 -> 01:00
+	la := loadLocation(t, "America/Los_Angeles")       // 2026-03-08 02:00 -> 03:00
+	apia := loadLocation(t, "Pacific/Apia")            // 2011-12-30 skipped as a whole day
+	tests := []struct {
+		name string
+		spec string
+		from time.Time
+		want time.Time
+	}{
+		// Issue #444: a 30-minute gap and a gap at midnight.
+		{"30-minute gap", "15 2 * * *", time.Date(2026, 10, 3, 2, 15, 0, 0, lordHowe), time.Date(2026, 10, 4, 2, 45, 0, 0, lordHowe)},
+		{"30-minute gap, before run in remaining hour", "15,40 2 * * *", time.Date(2026, 10, 4, 1, 0, 0, 0, lordHowe), time.Date(2026, 10, 4, 2, 40, 0, 0, lordHowe)},
+		{"30-minute gap, shifted run after real run", "15,40 2 * * *", time.Date(2026, 10, 4, 2, 40, 0, 0, lordHowe), time.Date(2026, 10, 4, 2, 45, 0, 0, lordHowe)},
+		{"30-minute gap, after shifted run", "15,40 2 * * *", time.Date(2026, 10, 4, 2, 45, 0, 0, lordHowe), time.Date(2026, 10, 5, 2, 15, 0, 0, lordHowe)},
+		{"30-minute gap, run at gap end", "0,30 2 * * *", time.Date(2026, 10, 4, 1, 0, 0, 0, lordHowe), time.Date(2026, 10, 4, 2, 30, 0, 0, lordHowe)},
+		{"30-minute gap, coalesced with gap end", "0,30 2 * * *", time.Date(2026, 10, 4, 2, 30, 0, 0, lordHowe), time.Date(2026, 10, 5, 2, 0, 0, 0, lordHowe)},
+		{"30-minute gap, one run per gap", "5,15 2 * * *", time.Date(2026, 10, 4, 1, 0, 0, 0, lordHowe), time.Date(2026, 10, 4, 2, 35, 0, 0, lordHowe)},
+		{"30-minute gap, no second gap run", "5,15 2 * * *", time.Date(2026, 10, 4, 2, 35, 0, 0, lordHowe), time.Date(2026, 10, 5, 2, 5, 0, 0, lordHowe)},
+		{"gap at midnight", "30 0 * * *", time.Date(2026, 9, 5, 0, 30, 0, 0, santiago), time.Date(2026, 9, 6, 1, 30, 0, 0, santiago)},
+		{"gap at midnight, day-restricted", "30 0 6 9 *", time.Date(2026, 9, 1, 0, 0, 0, 0, santiago), time.Date(2026, 9, 6, 1, 30, 0, 0, santiago)},
+		{"gap at midnight, real hour after", "0 1 * * *", time.Date(2026, 9, 5, 12, 0, 0, 0, santiago), time.Date(2026, 9, 6, 1, 0, 0, 0, santiago)},
+		{"gap day, real run after gap", "0 1 6 9 *", time.Date(2026, 9, 1, 0, 0, 0, 0, santiago), time.Date(2026, 9, 6, 1, 0, 0, 0, santiago)},
+		{"day before gap day", "0 1 5 9 *", time.Date(2026, 9, 5, 12, 0, 0, 0, santiago), time.Date(2027, 9, 5, 1, 0, 0, 0, santiago)},
+		{"control: one-hour gap", "30 2 * * *", time.Date(2026, 3, 7, 2, 30, 0, 0, la), time.Date(2026, 3, 8, 3, 30, 0, 0, la)},
+		// Issue #445: Next from the last second before the gap.
+		{"last second before gap", "30 2 * * *", time.Date(2026, 3, 8, 1, 59, 59, 0, la), time.Date(2026, 3, 8, 3, 30, 0, 0, la)},
+		{"two seconds before gap", "30 2 * * *", time.Date(2026, 3, 8, 1, 59, 58, 0, la), time.Date(2026, 3, 8, 3, 30, 0, 0, la)},
+		{"last fraction before gap", "30 2 * * *", time.Date(2026, 3, 8, 1, 59, 59, 999999999, la), time.Date(2026, 3, 8, 3, 30, 0, 0, la)},
+		{"at gap end", "30 2 * * *", time.Date(2026, 3, 8, 3, 0, 0, 0, la), time.Date(2026, 3, 8, 3, 30, 0, 0, la)},
+		{"inside hour after gap", "30 2 * * *", time.Date(2026, 3, 8, 3, 10, 0, 0, la), time.Date(2026, 3, 8, 3, 30, 0, 0, la)},
+		{"last second before shifted run", "30 2 * * *", time.Date(2026, 3, 8, 3, 29, 59, 0, la), time.Date(2026, 3, 8, 3, 30, 0, 0, la)},
+		{"at shifted run", "30 2 * * *", time.Date(2026, 3, 8, 3, 30, 0, 0, la), time.Date(2026, 3, 9, 2, 30, 0, 0, la)},
+		{"whole skipped day", "0 12 * * *", time.Date(2011, 12, 29, 12, 0, 0, 0, apia), time.Date(2011, 12, 31, 12, 0, 0, 0, apia)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sched, err := ParseStandard(tc.spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := sched.Next(tc.from); !got.Equal(tc.want) {
+				t.Errorf("Next(%v) = %v, want %v", tc.from, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestNextDSTGapRun_Seconds covers issue #445 with a seconds field.
+func TestNextDSTGapRun_Seconds(t *testing.T) {
+	la := loadLocation(t, "America/Los_Angeles")
+	sched, err := NewParser(Second | Minute | Hour | Dom | Month | Dow).Parse("0 30 2 * * *")
+	if err != nil {
+		t.Fatal(err)
+	}
+	from := time.Date(2026, 3, 8, 1, 59, 59, 0, la)
+	want := time.Date(2026, 3, 8, 3, 30, 0, 0, la)
+	if got := sched.Next(from); !got.Equal(want) {
+		t.Errorf("Next(%v) = %v, want %v", from, got, want)
+	}
+}
+
+// TestNextDSTGapRun_DSTSkip checks that DSTSkip drops the gap run for every
+// gap length, as robfig/cron does.
+func TestNextDSTGapRun_DSTSkip(t *testing.T) {
+	lordHowe := loadLocation(t, "Australia/Lord_Howe")
+	santiago := loadLocation(t, "America/Santiago")
+	la := loadLocation(t, "America/Los_Angeles")
+	tests := []struct {
+		spec string
+		from time.Time
+		want time.Time
+	}{
+		{"15 2 * * *", time.Date(2026, 10, 3, 2, 15, 0, 0, lordHowe), time.Date(2026, 10, 5, 2, 15, 0, 0, lordHowe)},
+		{"30 0 * * *", time.Date(2026, 9, 5, 0, 30, 0, 0, santiago), time.Date(2026, 9, 7, 0, 30, 0, 0, santiago)},
+		{"30 2 * * *", time.Date(2026, 3, 8, 1, 59, 59, 0, la), time.Date(2026, 3, 9, 2, 30, 0, 0, la)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.spec, func(t *testing.T) {
+			sched, err := NewParser(Minute | Hour | Dom | Month | Dow | DSTSkip).Parse(tc.spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := sched.Next(tc.from); !got.Equal(tc.want) {
+				t.Errorf("Next(%v) = %v, want %v", tc.from, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPrevNextDSTGapSymmetry checks that Prev yields the same runs as Next
+// across gaps that are not one hour at 02:00.
+func TestPrevNextDSTGapSymmetry(t *testing.T) {
+	lordHowe := loadLocation(t, "Australia/Lord_Howe")
+	santiago := loadLocation(t, "America/Santiago")
+	la := loadLocation(t, "America/Los_Angeles")
+	zones := []struct {
+		loc        *time.Location
+		start, end time.Time
+		specs      []string
+	}{
+		{
+			lordHowe, time.Date(2026, 10, 3, 0, 0, 0, 0, lordHowe), time.Date(2026, 10, 5, 12, 0, 0, 0, lordHowe),
+			[]string{"15 2 * * *", "15,40 2 * * *", "0,30 2 * * *", "*/10 2 * * *", "0 * * * *", "45 1,2 * * *"},
+		},
+		{
+			santiago, time.Date(2026, 9, 5, 0, 0, 0, 0, santiago), time.Date(2026, 9, 7, 12, 0, 0, 0, santiago),
+			[]string{"30 0 * * *", "0 0 * * *", "*/20 0,1 * * *", "30 0 6 9 *", "59 23 * * *"},
+		},
+		{
+			la, time.Date(2026, 3, 7, 0, 0, 0, 0, la), time.Date(2026, 3, 9, 12, 0, 0, 0, la),
+			[]string{"30 2 * * *", "59 1 * * *", "0 3 * * *"},
+		},
+	}
+	for _, z := range zones {
+		for _, spec := range z.specs {
+			for _, skip := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/DSTSkip=%t", z.loc, spec, skip), func(t *testing.T) {
+					options := Minute | Hour | Dom | Month | Dow
+					if skip {
+						options |= DSTSkip
+					}
+					sched, err := NewParser(options).Parse("TZ=" + z.loc.String() + " " + spec)
+					if err != nil {
+						t.Fatal(err)
+					}
+					forward, backward := runsBetween(sched, z.start, z.end)
+					if !slices.EqualFunc(forward, backward, time.Time.Equal) {
+						t.Errorf("Next and Prev disagree\nnext: %v\nprev: %v", forward, backward)
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestDSTGap_SchedulerRun drives the run loop over the gaps from issues #444
+// and #445 and checks that the transition day has exactly one run.
+func TestDSTGap_SchedulerRun(t *testing.T) {
+	tests := []struct {
+		name  string
+		zone  string
+		spec  string
+		start time.Time // wall clock in zone
+		want  []time.Time
+	}{
+		{
+			"30-minute gap", "Australia/Lord_Howe", "15 2 * * *", time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC),
+			[]time.Time{time.Date(2026, 10, 3, 2, 15, 0, 0, time.UTC), time.Date(2026, 10, 4, 2, 45, 0, 0, time.UTC), time.Date(2026, 10, 5, 2, 15, 0, 0, time.UTC)},
+		},
+		{
+			"gap at midnight", "America/Santiago", "30 0 * * *", time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC),
+			[]time.Time{time.Date(2026, 9, 5, 0, 30, 0, 0, time.UTC), time.Date(2026, 9, 6, 1, 30, 0, 0, time.UTC), time.Date(2026, 9, 7, 0, 30, 0, 0, time.UTC)},
+		},
+		{
+			"started in the last second before the gap", "America/Los_Angeles", "30 2 * * *", time.Date(2026, 3, 8, 1, 59, 59, 0, time.UTC),
+			[]time.Time{time.Date(2026, 3, 8, 3, 30, 0, 0, time.UTC), time.Date(2026, 3, 9, 2, 30, 0, 0, time.UTC)},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			loc := loadLocation(t, tc.zone)
+			inZone := func(w time.Time) time.Time {
+				return time.Date(w.Year(), w.Month(), w.Day(), w.Hour(), w.Minute(), w.Second(), 0, loc)
+			}
+			clock := NewFakeClock(inZone(tc.start))
+			c := New(WithClock(clock), WithLocation(loc))
+			var runs atomic.Int32
+			if _, err := c.AddFunc(tc.spec, func() { runs.Add(1) }); err != nil {
+				t.Fatal(err)
+			}
+			c.Start()
+			defer c.Stop()
+
+			var got []time.Time
+			for range tc.want {
+				clock.BlockUntil(1)
+				next := c.Entries()[0].Next
+				got = append(got, next)
+				clock.Set(next)
+				deadline := time.Now().Add(2 * time.Second)
+				for c.Entries()[0].Next.Equal(next) && time.Now().Before(deadline) {
+					time.Sleep(time.Millisecond)
+				}
+			}
+			for i, w := range tc.want {
+				if !got[i].Equal(inZone(w)) {
+					t.Errorf("run %d = %v, want %v", i, got[i].In(loc), inZone(w))
+				}
+			}
+			// Jobs run in their own goroutines; wait for the last one.
+			deadline := time.Now().Add(2 * time.Second)
+			for int(runs.Load()) < len(tc.want) && time.Now().Before(deadline) {
+				time.Sleep(time.Millisecond)
+			}
+			if n := int(runs.Load()); n != len(tc.want) {
+				t.Errorf("got %d runs, want %d", n, len(tc.want))
+			}
+		})
+	}
+}
+
+// gapOracle lists the runs of a minute-resolution schedule between start and
+// end without the gap code in spec.go: every existing wall time that matches,
+// plus, for each spring-forward gap, the first skipped matching wall time read
+// in the offset before the gap.
+func gapOracle(t *testing.T, s *SpecSchedule, loc *time.Location, start, end time.Time) []time.Time {
+	t.Helper()
+	var runs []time.Time
+	_, lastOff := start.Add(-time.Minute).In(loc).Zone()
+	inGap, gapHasRun := false, false
+	day := time.Date(start.In(loc).Year(), start.In(loc).Month(), start.In(loc).Day(), 0, 0, 0, 0, time.UTC)
+	for ; !day.After(end.In(loc)); day = day.AddDate(0, 0, 1) {
+		for w := day; w.Before(day.AddDate(0, 0, 1)); w = w.Add(time.Minute) {
+			i := time.Date(w.Year(), w.Month(), w.Day(), w.Hour(), w.Minute(), 0, 0, loc)
+			matches := yearMatches(w.Year(), s.Year) && fieldMatches(int(w.Month()), s.Month) &&
+				dayMatches(s, w) && fieldMatches(w.Hour(), s.Hour) && fieldMatches(w.Minute(), s.Minute) &&
+				fieldMatches(0, s.Second)
+			exists := i.Hour() == w.Hour() && i.Minute() == w.Minute() && i.Day() == w.Day()
+			if !exists {
+				if !inGap {
+					inGap, gapHasRun = true, false
+				}
+				if matches && !gapHasRun {
+					gapHasRun = true
+					runs = append(runs, time.Date(w.Year(), w.Month(), w.Day(), w.Hour(), w.Minute(), 0, 0, time.FixedZone("", lastOff)))
+				}
+				continue
+			}
+			inGap = false
+			_, lastOff = i.Zone()
+			if matches {
+				runs = append(runs, i)
+			}
+		}
+	}
+	slices.SortFunc(runs, func(a, b time.Time) int { return a.Compare(b) })
+	return slices.CompactFunc(runs, time.Time.Equal)
+}
+
+// TestDSTGapSweep checks Next and Prev from every minute around each gap, and
+// from the seconds around it, against gapOracle.
+func TestDSTGapSweep(t *testing.T) {
+	zones := []struct {
+		name       string
+		start, end time.Time // wall clock, UTC-coded
+		specs      []string
+	}{
+		{
+			"Australia/Lord_Howe", time.Date(2026, 10, 3, 22, 0, 0, 0, time.UTC), time.Date(2026, 10, 4, 6, 0, 0, 0, time.UTC),
+			[]string{"15 2 * * *", "5,15 2 * * *", "15,40 2 * * *", "0,30 2 * * *", "*/10 2 * * *", "0 * * * *", "45 1,2 * * *", "* 2 * * *"},
+		},
+		{
+			"America/Santiago", time.Date(2026, 9, 5, 20, 0, 0, 0, time.UTC), time.Date(2026, 9, 6, 4, 0, 0, 0, time.UTC),
+			[]string{"30 0 * * *", "0 0 * * *", "*/20 0,1 * * *", "30 0 6 9 *", "0 1 5 9 *", "0 1 6 9 *", "59 23 * * *", "0 * * * *"},
+		},
+		{
+			"America/Los_Angeles", time.Date(2026, 3, 7, 22, 0, 0, 0, time.UTC), time.Date(2026, 3, 8, 6, 0, 0, 0, time.UTC),
+			[]string{"30 2 * * *", "*/15 2 * * *", "59 1 * * *", "0 3 * * *", "30 1-3 * * *", "0 * * * *"},
+		},
+		{
+			"Pacific/Apia", time.Date(2011, 12, 29, 20, 0, 0, 0, time.UTC), time.Date(2011, 12, 31, 4, 0, 0, 0, time.UTC),
+			[]string{"0 12 * * *", "0 2 30 12 *", "0 0 * * *", "30 23 * * *"},
+		},
+	}
+	for _, z := range zones {
+		loc := loadLocation(t, z.name)
+		start := time.Date(z.start.Year(), z.start.Month(), z.start.Day(), z.start.Hour(), 0, 0, 0, loc)
+		end := time.Date(z.end.Year(), z.end.Month(), z.end.Day(), z.end.Hour(), 0, 0, 0, loc)
+		for _, spec := range z.specs {
+			t.Run(z.name+"/"+spec, func(t *testing.T) {
+				sched, err := ParseStandard("TZ=" + z.name + " " + spec)
+				if err != nil {
+					t.Fatal(err)
+				}
+				s := sched.(*SpecSchedule)
+				// Pad the oracle by a day on both sides for the runs around the window.
+				oracle := gapOracle(t, s, loc, start.AddDate(0, 0, -1), end.AddDate(0, 0, 1))
+				failures := 0
+				for m := start; m.Before(end) && failures < 5; m = m.Add(time.Minute) {
+					for _, from := range []time.Time{m.Add(-time.Second), m, m.Add(time.Second), m.Add(30 * time.Second)} {
+						i, _ := slices.BinarySearchFunc(oracle, from, func(a, b time.Time) int { return a.Compare(b) })
+						j := i
+						if j < len(oracle) && oracle[j].Equal(from) {
+							j++
+						}
+						if got := s.Next(from); j < len(oracle) && !got.Equal(oracle[j]) {
+							t.Errorf("Next(%v) = %v, want %v", from.In(loc), got.In(loc), oracle[j].In(loc))
+							failures++
+						}
+						if got := s.Prev(from); i > 0 && !got.Equal(oracle[i-1]) {
+							t.Errorf("Prev(%v) = %v, want %v", from.In(loc), got.In(loc), oracle[i-1].In(loc))
+							failures++
+						}
+					}
+				}
+			})
+		}
+	}
+}

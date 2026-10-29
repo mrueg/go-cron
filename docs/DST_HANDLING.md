@@ -13,7 +13,7 @@ This library implements ISC cron-compatible behavior to handle these cases predi
 
 ## Spring Forward (Clock Jumps Ahead)
 
-When DST causes clocks to spring forward (e.g., 2:00 AM becomes 3:00 AM), any jobs scheduled during the skipped hour will run immediately after the transition.
+When DST causes clocks to spring forward (e.g., 2:00 AM becomes 3:00 AM), a job scheduled during the skipped time runs once on that day: at its scheduled time shifted by the length of the gap.
 
 ### Example: US Eastern Time
 
@@ -25,22 +25,30 @@ The hour 2:00-2:59 AM does not exist
 
 | Schedule | Behavior |
 |----------|----------|
-| `0 30 2 * * *` (2:30 AM) | Runs at 3:30 AM (same minute, in the hour after the transition) |
+| `0 30 2 * * *` (2:30 AM) | Runs at 3:30 AM (shifted by the one-hour gap) |
+| `0 */15 2 * * *` (2:00, 2:15, 2:30, 2:45 AM) | Runs once, at 3:00 AM (the first skipped time, shifted) |
 | `0 0 3 * * *` (3:00 AM) | Runs at 3:00 AM (as scheduled) |
 | `0 0 1 * * *` (1:00 AM) | Runs at 1:00 AM (unaffected) |
 
-`Prev()` reports the same skipped-hour run that `Next()` produces, so walking a schedule backwards over the transition day yields the same runs as walking it forwards.
+Gaps of other lengths and at other times follow the same rule:
+
+| Zone and gap | Schedule | Run on the transition day |
+|--------------|----------|---------------------------|
+| `Australia/Lord_Howe`, 02:00 → 02:30 | `15 2 * * *` | 02:45 |
+| `Australia/Lord_Howe`, 02:00 → 02:30 | `5,15 2 * * *` | 02:35 (once) |
+| `America/Santiago`, 00:00 → 01:00 | `30 0 * * *` | 01:30 |
+| `America/Los_Angeles`, 02:00 → 03:00 | `30 2 * * *` | 03:30 |
+
+A time that the gap skips runs once per gap: the earliest skipped time that the
+schedule matches, shifted by the length of the gap. The other skipped times of
+the same gap merge into that run. When the shifted run falls on a time that the
+schedule also matches after the gap, the job runs once at that time.
+
+`Prev()` reports the same gap run that `Next()` produces, so walking a schedule backwards over the transition day yields the same runs as walking it forwards. `Next()` reports the gap run from any time before it, including the last second before the gap and the time between the gap and the run.
 
 ### Implementation
 
-The `checkHourDSTSkip` function in `spec.go` detects when time advances by 2 hours (indicating a DST spring-forward) and runs jobs scheduled for the skipped hour in the hour after it, at their scheduled minute:
-
-```go
-// If prev.Hour() == 1 and curr.Hour() == 3, a job for 2:XX runs at 3:XX
-if curr.Hour()-prev.Hour() == 2 {
-    // Job in skipped hour runs immediately
-}
-```
+`Next` and `Prev` in `spec.go` first find the next or previous wall time that exists. They then walk the zone transitions between the start time and that result with `time.Time.ZoneBounds`. A transition that moves the clock forward is a gap; `gapRun` returns its run, and `Next` or `Prev` returns it when it comes first.
 
 ### Why ISC Behavior?
 

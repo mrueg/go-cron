@@ -416,57 +416,6 @@ func TestNormalizeDSTDay_Arithmetic(t *testing.T) {
 	}
 }
 
-// TestCheckHourDSTSkip_Boundary tests spec.go:142 for DST skip detection.
-// This ensures the hour bit check correctly identifies skipped hours.
-func TestCheckHourDSTSkip_Boundary(t *testing.T) {
-	tests := []struct {
-		name     string
-		prev     time.Time
-		curr     time.Time
-		hourBits uint64
-		expected bool
-	}{
-		{
-			name:     "no DST skip (1 hour diff)",
-			prev:     time.Date(2024, 3, 10, 1, 0, 0, 0, time.UTC),
-			curr:     time.Date(2024, 3, 10, 2, 0, 0, 0, time.UTC),
-			hourBits: 0xFFFFFF, // all hours
-			expected: false,
-		},
-		{
-			name:     "DST skip (2 hour diff) - skipped hour in schedule",
-			prev:     time.Date(2024, 3, 10, 1, 0, 0, 0, time.UTC),
-			curr:     time.Date(2024, 3, 10, 3, 0, 0, 0, time.UTC),
-			hourBits: 1 << 2, // hour 2 scheduled (the skipped hour)
-			expected: true,
-		},
-		{
-			name:     "DST skip (2 hour diff) - skipped hour NOT in schedule",
-			prev:     time.Date(2024, 3, 10, 1, 0, 0, 0, time.UTC),
-			curr:     time.Date(2024, 3, 10, 3, 0, 0, 0, time.UTC),
-			hourBits: 1 << 5, // hour 5 scheduled (not the skipped hour)
-			expected: false,
-		},
-		{
-			name:     "3 hour diff - not a DST skip",
-			prev:     time.Date(2024, 3, 10, 1, 0, 0, 0, time.UTC),
-			curr:     time.Date(2024, 3, 10, 4, 0, 0, 0, time.UTC),
-			hourBits: 0xFFFFFF,
-			expected: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := checkHourDSTSkip(tt.prev, tt.curr, tt.hourBits)
-			if got != tt.expected {
-				t.Errorf("checkHourDSTSkip(%v, %v, %x) = %v, want %v",
-					tt.prev, tt.curr, tt.hourBits, got, tt.expected)
-			}
-		})
-	}
-}
-
 // TestNormalizeDOW tests the NormalizeDOW function that maps bit 7 to bit 0.
 func TestNormalizeDOW(t *testing.T) {
 	tests := []struct {

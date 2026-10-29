@@ -14,6 +14,17 @@ agree with robfig/cron, such as tools that read Kubernetes CronJob specs. The
 default stays as decided here. `DSTSkip` covers spring-forward only; the
 scheduler's fall-back deduplication still applies.
 
+**Update 2026-10-29:** The spring-forward rule now covers gaps of any length
+and at any hour ([#444](https://github.com/netresearch/go-cron/issues/444),
+[#445](https://github.com/netresearch/go-cron/issues/445)). A skipped time runs
+shifted by the length of the gap, once per gap: the earliest skipped time that
+the schedule matches. For the one-hour gap at 02:00 this is the rule below
+(2:30 runs at 3:30). For a 30-minute gap (`Australia/Lord_Howe`) 02:15 runs at
+02:45; for a gap at midnight (`America/Santiago`) 00:30 runs at 01:30. The
+implementation is `gapRun` in `spec.go`, which reads the zone transitions with
+`time.Time.ZoneBounds`; `checkHourDSTSkip` is gone. Pinned by `TestNextDSTGapRun`
+and `TestDSTGapSweep` in `dst_gap_test.go`.
+
 ## Date
 2025-12-14
 
@@ -37,7 +48,7 @@ Implement ISC cron-compatible behavior using normalization functions:
 
 ### Spring Forward: Run in the Hour After the Gap
 
-Jobs scheduled during the skipped hour run once, in the hour after the transition, at their scheduled minute and second (2:30 runs at 3:30; a job at 2:00 runs at 3:00). This was decided in [#41](https://github.com/netresearch/go-cron/issues/41) and is pinned by `TestNext` and `TestDSTSpringForward_SchedulerRun`. The code sketch below shows the original normalization idea; the implementation is `checkHourDSTSkip` in `spec.go`:
+Jobs scheduled during the skipped hour run once, in the hour after the transition, at their scheduled minute and second (2:30 runs at 3:30; a job at 2:00 runs at 3:00). This was decided in [#41](https://github.com/netresearch/go-cron/issues/41) and is pinned by `TestNext` and `TestDSTSpringForward_SchedulerRun`. The code sketch below shows the original normalization idea; the implementation was `checkHourDSTSkip` in `spec.go` until the 2026-10-29 update above:
 
 ```go
 func normalizeDSTDay(t time.Time, loc *time.Location) time.Time {
@@ -152,7 +163,7 @@ preventing duplicate execution at the scheduler level.
 
 The `SpecSchedule.Next()` function:
 1. Calculates next time based on cron fields
-2. Normalizes for spring-forward via `checkHourDSTSkip()`
+2. Adds the run for a spring-forward gap via `gapRun()` (see the 2026-10-29 update)
 3. Returns the next matching time (may be in the second occurrence during fall-back)
 
 The scheduler's `postDispatchScheduled()` then applies the fall-back guard.
