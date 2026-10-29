@@ -139,11 +139,7 @@ func (c *Cron) calculateMissedRuns(e *Entry, now time.Time) []time.Time {
 			break
 		}
 
-		// Check grace period: skip if the missed time is too old
-		if e.MissedGracePeriod > 0 && now.Sub(t) > e.MissedGracePeriod {
-			continue
-		}
-		if c.isFallBackRepeat(e.Schedule, fired, prev, t) {
+		if c.skipMissed(e, now, t, prev, fired) {
 			continue
 		}
 
@@ -166,6 +162,16 @@ func (c *Cron) calculateMissedRuns(e *Entry, now time.Time) []time.Time {
 	}
 
 	return missed
+}
+
+// skipMissed reports whether the missed time t is left out of the catch-up
+// list: it is older than the grace period, or it is the second copy of a DST
+// fall-back time that ran (fired) or that the previous catch-up (prev) runs.
+func (c *Cron) skipMissed(e *Entry, now, t, prev time.Time, fired []time.Time) bool {
+	if e.MissedGracePeriod > 0 && now.Sub(t) > e.MissedGracePeriod {
+		return true
+	}
+	return c.isFallBackRepeat(e.Schedule, fired, prev, t)
 }
 
 // handleMissedRuns executes catch-up runs based on the entry's MissedPolicy.
