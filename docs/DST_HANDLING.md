@@ -73,18 +73,40 @@ The hour 1:00-1:59 AM occurs twice
 |----------|----------|
 | `0 30 1 * * *` (1:30 AM) | Runs once, during first occurrence (EDT) |
 | `0 0 2 * * *` (2:00 AM) | Runs once at 2:00 AM EST |
+| `0 0,30 1 * * *` (1:00 and 1:30 AM) | 1:00 and 1:30 EDT, once each |
+| `0 */20 1 * * *` (1:00, 1:20, 1:40 AM) | 1:00, 1:20 and 1:40 EDT, once each |
+| `0 */30 * * * *` (every 30 minutes) | Runs in both copies of the hour (wildcard hour, see below) |
 
 ### Important Notes
 
 - Jobs on a cron expression run **once** during fall-back transitions (not twice)
 - The first occurrence (before transition) is used
-- The scheduler's `isDSTFallBackDuplicate()` guard in `postDispatchScheduled()`
-  detects when `Next()` returns the second occurrence of the same wall-clock time
-  and skips it (see ADR-016)
-- Jobs that fire every minute (e.g., `* * * * *`) are unaffected — their wall-clock
-  times differ each tick. Jobs with a fixed minute but wildcard hour (e.g., `0 * * * *`)
-  ARE deduplicated — stricter than Vixie cron (which runs them twice) but consistent
-  with Quartz's "once per wall-clock time" behavior
+- The scheduler's guard (`skipFallBackRepeats()`, `isFallBackRepeat()`) runs
+  whenever the scheduler computes the next time of an entry: after a run, at
+  start, when an entry is added or updated, while it is paused, after the clock
+  moved back, and for the catch-up list of `WithMissedPolicy`. It skips a time in
+  the second copy of the hour when:
+  - it repeats the wall-clock time of the run just fired
+    (`isDSTFallBackDuplicate()`), for every cron expression; or
+  - the spec restricts the hour field and the entry fired that wall-clock time
+    in the first copy (`repeatsFiredTime()`). Each entry records the scheduled
+    times it fired in the first copy. A time it did not fire there (the entry was
+    added later, paused, or the process was asleep) runs in the second copy. The
+    record stays across `UpdateEntry` and `UpsertJob`, so a config reload in the
+    repeated hour does not run a time twice. Catch-up runs count as runs of their
+    time. The record lives in memory only: after a process restart inside the
+    repeated hour, the times of the first copy run again in the second copy.
+- An hour field of `*` or `*/1` counts as a wildcard. Any other hour field counts
+  as restricted, also `0-23` and `*/2`.
+  A frequent spec with a restricted hour, such as `*/5 0-6 * * *`, therefore has
+  no run in the second copy of the hour: it runs every 5 minutes through the
+  first copy and continues at 02:00.
+- Jobs whose hour field is `*` keep only the first rule. Jobs that fire every
+  minute (e.g., `* * * * *`) or several times an hour (e.g., `*/30 * * * *`) run in
+  both copies of the hour, because the next time never repeats the run just fired.
+  Jobs with a fixed minute but wildcard hour (e.g., `0 * * * *`) ARE deduplicated —
+  stricter than Vixie cron (which runs them twice) but consistent with Quartz's
+  "once per wall-clock time" behavior
 - Intervals (`@every`, `@every_start`, `@every_aligned`) are not deduplicated: they
   count elapsed time, not wall-clock time. `@every 1h` runs at 01:30 EDT and again
   one hour later at 01:30 EST (see ADR-026)
