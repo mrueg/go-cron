@@ -127,8 +127,8 @@ func (c *Cron) calculateMissedRuns(e *Entry, now time.Time) []time.Time {
 	var missed []time.Time
 	t := e.Prev
 	// The DST fall-back guard applies to catch-ups too: the second copy of a
-	// time that ran, or that an earlier catch-up in this list runs, is not
-	// a missed run.
+	// time that ran, or that an earlier MissedRunAll catch-up in this list
+	// runs, is not a missed run.
 	prev, fired := e.Prev, slices.Clone(e.fallBackRuns)
 
 	for len(missed) < maxMissedRuns {
@@ -148,7 +148,11 @@ func (c *Cron) calculateMissedRuns(e *Entry, now time.Time) []time.Time {
 		}
 
 		missed = append(missed, t)
-		prev, fired = t, c.addFallBackRun(e.Schedule, fired, t)
+		// MissedRunOnce runs only the last time of the list, so the earlier
+		// ones do not count as runs.
+		if e.MissedPolicy == MissedRunAll {
+			prev, fired = t, c.addFallBackRun(e.Schedule, fired, t)
+		}
 	}
 
 	// Log warning if we hit the limit

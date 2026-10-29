@@ -477,6 +477,7 @@ func TestDSTFallBack_MissedPolicy(t *testing.T) {
 		{"RunOnce in first copy", MissedRunOnce, at(edt, 1, 1, 45), 2, []time.Time{at(edt, 1, 1, 30), at(est, 1, 1, 0), at(est, 2, 1, 0)}},
 		{"RunAll in first copy", MissedRunAll, at(edt, 1, 1, 45), 1, []time.Time{at(edt, 1, 1, 0), at(edt, 1, 1, 30), at(est, 2, 1, 0)}},
 		{"RunAll in second copy", MissedRunAll, at(est, 1, 1, 10), 1, []time.Time{at(edt, 1, 1, 0), at(edt, 1, 1, 30), at(est, 2, 1, 0)}},
+		{"RunOnce in second copy", MissedRunOnce, at(est, 1, 1, 10), 1, []time.Time{at(est, 1, 1, 0), at(est, 1, 1, 30)}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
