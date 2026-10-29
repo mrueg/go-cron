@@ -48,26 +48,24 @@ func TestDSTFallBack_RestrictedHourRunsOnce(t *testing.T) {
 	}
 	edt := func(h, m int) time.Time { return time.Date(2026, 11, 1, h, m, 0, 0, time.FixedZone("EDT", -4*3600)) }
 	est := func(d, h, m int) time.Time { return time.Date(2026, 11, d, h, m, 0, 0, time.FixedZone("EST", -5*3600)) }
-	start := time.Date(2026, 10, 31, 12, 0, 0, 0, ny)
+	noon := time.Date(2026, 10, 31, 12, 0, 0, 0, ny)
+	lateEvening := time.Date(2026, 10, 31, 23, 59, 0, 0, ny)
 	tests := []struct {
 		spec string
+		from time.Time
 		want []time.Time
 	}{
-		{"0,30 1 * * *", []time.Time{edt(1, 0), edt(1, 30), est(2, 1, 0)}},
-		{"*/20 1 * * *", []time.Time{edt(1, 0), edt(1, 20), edt(1, 40), est(2, 1, 0)}},
-		{"30 1-3 * * *", []time.Time{edt(1, 30), est(1, 2, 30), est(1, 3, 30)}},
-		{"30 1 * * *", []time.Time{edt(1, 30), est(2, 1, 30)}},
+		{"0,30 1 * * *", noon, []time.Time{edt(1, 0), edt(1, 30), est(2, 1, 0)}},
+		{"*/20 1 * * *", noon, []time.Time{edt(1, 0), edt(1, 20), edt(1, 40), est(2, 1, 0)}},
+		{"30 1-3 * * *", noon, []time.Time{edt(1, 30), est(1, 2, 30), est(1, 3, 30)}},
+		{"30 1 * * *", noon, []time.Time{edt(1, 30), est(2, 1, 30)}},
 		// Wildcard hour: unchanged.
-		{"0 * * * *", []time.Time{edt(0, 0), edt(1, 0), est(1, 2, 0)}},
-		{"*/30 * * * *", []time.Time{edt(0, 0), edt(0, 30), edt(1, 0), edt(1, 30), est(1, 1, 0), est(1, 1, 30)}},
+		{"0 * * * *", lateEvening, []time.Time{edt(0, 0), edt(1, 0), est(1, 2, 0)}},
+		{"*/30 * * * *", lateEvening, []time.Time{edt(0, 0), edt(0, 30), edt(1, 0), edt(1, 30), est(1, 1, 0), est(1, 1, 30)}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.spec, func(t *testing.T) {
-			from := start
-			if tc.spec == "0 * * * *" || tc.spec == "*/30 * * * *" {
-				from = time.Date(2026, 10, 31, 23, 59, 0, 0, ny)
-			}
-			got := fallBackRuns(t, ny, from, len(tc.want), func(c *Cron) error {
+			got := fallBackRuns(t, ny, tc.from, len(tc.want), func(c *Cron) error {
 				_, err := c.AddFunc(tc.spec, func() {})
 				return err
 			})
@@ -507,5 +505,63 @@ func TestDSTFallBack_MissedPolicy(t *testing.T) {
 			rec.mu.Unlock()
 			equalRuns(t, got, tc.want)
 		})
+	}
+}
+
+// TestInFallBackFirstCopy pins which instants count as the first copy of a
+// repeated hour.
+func TestInFallBackFirstCopy(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skip("America/New_York timezone not available")
+	}
+	edt, est := time.FixedZone("EDT", -4*3600), time.FixedZone("EST", -5*3600)
+	tests := []struct {
+		name string
+		t    time.Time
+		loc  *time.Location
+		want bool
+	}{
+		{"first copy", time.Date(2026, 11, 1, 1, 30, 0, 0, edt), ny, true},
+		{"start of first copy", time.Date(2026, 11, 1, 1, 0, 0, 0, edt), ny, true},
+		{"before the repeated hour", time.Date(2026, 11, 1, 0, 59, 59, 0, edt), ny, false},
+		{"second copy", time.Date(2026, 11, 1, 1, 30, 0, 0, est), ny, false},
+		{"spring-forward zone", time.Date(2026, 3, 8, 1, 30, 0, 0, ny), ny, false},
+		{"zone without transitions", time.Date(2026, 11, 1, 5, 30, 0, 0, time.UTC), time.UTC, false},
+		{"zero time", time.Time{}, ny, false},
+		{"nil location", time.Date(2026, 11, 1, 1, 30, 0, 0, edt), nil, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := inFallBackFirstCopy(tc.t, tc.loc); got != tc.want {
+				t.Errorf("inFallBackFirstCopy(%v) = %v, want %v", tc.t, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAddFallBackRun_DropsEarlierTransition checks that a record from an
+// earlier fall-back night is replaced, so the record does not grow.
+func TestAddFallBackRun_DropsEarlierTransition(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skip("America/New_York timezone not available")
+	}
+	edt := time.FixedZone("EDT", -4*3600)
+	c := New(WithLocation(ny))
+	sched, err := ParseStandard("0,30 1 * * *")
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := time.Date(2025, 11, 2, 1, 30, 0, 0, edt)
+	runs := []time.Time{time.Date(2025, 11, 2, 1, 0, 0, 0, edt), last}
+	this := time.Date(2026, 11, 1, 1, 0, 0, 0, edt)
+	got := c.addFallBackRun(sched, runs, this)
+	if len(got) != 1 || !got[0].Equal(this) {
+		t.Errorf("addFallBackRun = %v, want [%v]", got, this)
+	}
+	// A time outside a first copy is not recorded.
+	if got := c.addFallBackRun(sched, nil, time.Date(2026, 7, 1, 1, 0, 0, 0, edt)); got != nil {
+		t.Errorf("addFallBackRun outside a fall-back hour = %v, want nil", got)
 	}
 }
