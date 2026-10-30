@@ -217,7 +217,7 @@ This library implements ISC cron-compatible DST behavior:
 | Transition | Behavior |
 |------------|----------|
 | **Spring Forward** (hour skipped) | Jobs in skipped hour run immediately after transition |
-| **Fall Back** (hour repeats) | Fixed times run once, during first occurrence; hourly or more frequent jobs keep their rhythm |
+| **Fall Back** (hour repeats) | Fixed times run once (in the second occurrence only if the entry did not run them in the first); hourly or more frequent jobs keep their rhythm where a full hour repeats ([limits](docs/DST_HANDLING.md)) |
 | **Midnight DST** (midnight doesn't exist) | Automatically normalized to valid time |
 
 > [!TIP]

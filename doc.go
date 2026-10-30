@@ -330,10 +330,14 @@ Spring Forward (clocks skip an hour):
   - Jobs scheduled exactly at the transition boundary may run immediately
 
 Fall Back (clocks repeat an hour):
-  - A job at fixed times (30 1 * * *, 0,30 1 * * *) runs each time once, during
-    the first occurrence of the repeated hour
-  - A job that runs every hour or more often (0 * * * *, or every 5 minutes)
-    keeps its rhythm and runs in both occurrences
+  - A job at fixed times (30 1 * * *, 0,30 1 * * *) runs each time once: during
+    the first occurrence of the repeated hour, or during the second if the
+    entry did not run it in the first (added, paused or restarted in between)
+  - A time in the second occurrence also runs if the spec matches the wall
+    time one repeat length earlier or later; so a job that runs every hour or
+    more often (0 * * * *, or every 5 minutes) keeps its rhythm in a zone that
+    repeats a full hour. Where the repeat is 30 minutes (Lord Howe Island),
+    every 20 minutes runs 01:40 once
   - Intervals (@every, @every_start, @every_aligned) count elapsed time and run
     in both occurrences
 
@@ -349,7 +353,7 @@ Midnight Doesn't Exist:
 ⚠️ Important Edge Cases:
   - Jobs during spring-forward gap: Run immediately after transition
   - Jobs during fall-back repeat: fixed times run once, hourly or more frequent
-    jobs keep their rhythm
+    jobs keep their rhythm (with the limits listed under Fall Back)
   - Multi-timezone systems: Each job uses its configured timezone independently
   - Leap seconds: Not handled; use NTP-synced systems for best results
 
