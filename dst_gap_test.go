@@ -586,3 +586,51 @@ func TestNextChathamMinuteHourChange(t *testing.T) {
 		})
 	}
 }
+
+// TestPrevMonthStartInRepeatedHour covers a month whose midnight lies in a
+// repeated fall-back hour, where time.Date picks the second copy of 00:00 and
+// one second earlier is still in the same month: Asia/Gaza and Asia/Hebron
+// fell back from 01:00 to 00:00 on 2004-10-01, Europe/Lisbon on 1916-11-01
+// (#450). Prev must step back into the previous month.
+func TestPrevMonthStartInRepeatedHour(t *testing.T) {
+	tests := []struct {
+		name, zone, spec string
+		options          ParseOption
+		maxYears         int
+		from             [6]int // year, month, day, hour, minute, second in zone
+		want             [6]int // zero value: no run
+	}{
+		{"Gaza/no run", "Asia/Gaza", "0 0 31 2 *", Minute | Hour | Dom | Month | Dow, 25, [6]int{2028, 10, 22, 1, 6, 22}, [6]int{}},
+		{"Gaza/last day before", "Asia/Gaza", "59 23 30 9 *", Minute | Hour | Dom | Month | Dow, 0, [6]int{2004, 10, 15, 0, 0, 0}, [6]int{2004, 9, 30, 23, 59, 0}},
+		{"Hebron/last day before", "Asia/Hebron", "59 23 30 9 *", Minute | Hour | Dom | Month | Dow, 0, [6]int{2004, 10, 15, 0, 0, 0}, [6]int{2004, 9, 30, 23, 59, 0}},
+		{"Lisbon/no run", "Europe/Lisbon", "* */13 15-22 31-31 9 6 *", Second | Minute | Hour | Dom | Month | Dow | Year, 2, [6]int{1917, 3, 1, 2, 9, 13}, [6]int{}},
+		{"Lisbon/last day before", "Europe/Lisbon", "0 23 31 10 *", Minute | Hour | Dom | Month | Dow, 0, [6]int{1916, 11, 15, 0, 0, 0}, [6]int{1916, 10, 31, 23, 0, 0}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			loc := loadLocation(t, tc.zone)
+			sched, err := NewParser(tc.options).WithMaxSearchYears(tc.maxYears).Parse("TZ=" + tc.zone + " " + tc.spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			at := func(v [6]int) time.Time {
+				return time.Date(v[0], time.Month(v[1]), v[2], v[3], v[4], v[5], 0, loc)
+			}
+			from := at(tc.from)
+			want := time.Time{}
+			if tc.want != [6]int{} {
+				want = at(tc.want)
+			}
+			done := make(chan time.Time, 1)
+			go func() { done <- sched.(ScheduleWithPrev).Prev(from) }()
+			select {
+			case got := <-done:
+				if !got.Equal(want) {
+					t.Errorf("Prev(%v) = %v, want %v", from, got, want)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("Prev(%v) did not return within 5s", from)
+			}
+		})
+	}
+}
