@@ -634,3 +634,37 @@ func TestPrevMonthStartInRepeatedHour(t *testing.T) {
 		})
 	}
 }
+
+// TestPrevAcrossDateGoingBack covers Prev around Antarctica/Casey on
+// 2010-03-05, where the clock went back from 02:00 to 23:00 of the day
+// before, with a day field that does not match the 03-05 run being looked
+// for. Prev must return, and it must return a time before its input.
+func TestPrevAcrossDateGoingBack(t *testing.T) {
+	loc := loadLocation(t, "Antarctica/Casey")
+	tests := []struct {
+		spec       string
+		from, want time.Time
+	}{
+		{"0 0 0 1 * *", time.Date(2010, 3, 5, 10, 0, 0, 0, loc), time.Date(2010, 3, 1, 0, 0, 0, 0, loc)},
+		{"0 0 0 1 * *", time.Date(2010, 3, 4, 23, 30, 0, 0, loc), time.Date(2010, 3, 1, 0, 0, 0, 0, loc)},
+		{"0 0 0 5 * *", time.Date(2010, 3, 4, 10, 0, 0, 0, loc), time.Date(2010, 2, 5, 0, 0, 0, 0, loc)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.spec+"/"+tc.from.Format(time.RFC3339), func(t *testing.T) {
+			sched, err := NewParser(Second | Minute | Hour | Dom | Month | Dow).Parse("TZ=Antarctica/Casey " + tc.spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan time.Time, 1)
+			go func() { done <- sched.(ScheduleWithPrev).Prev(tc.from) }()
+			select {
+			case got := <-done:
+				if !got.Equal(tc.want) {
+					t.Errorf("Prev(%v) = %v, want %v", tc.from, got, tc.want)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("Prev(%v) did not return within 5s", tc.from)
+			}
+		})
+	}
+}
