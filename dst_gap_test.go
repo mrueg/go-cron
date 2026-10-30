@@ -429,6 +429,32 @@ func checkAgainstOracle(t *testing.T, s *SpecSchedule, loc *time.Location, oracl
 	return failures
 }
 
+// TestNextPrevSecondsOffset checks a zone whose UTC offset has seconds, where
+// the minute step truncates to an absolute minute: when a time field wraps,
+// the search must keep the state of the previous pass, or every pass moves
+// the wall clock back and the search runs out (zero time).
+func TestNextPrevSecondsOffset(t *testing.T) {
+	loc := time.FixedZone("X", 30)
+	p := NewParser(Second | Minute | Hour | Dom | Month | Dow)
+	from := time.Date(2026, 10, 30, 12, 29, 15, 0, loc)
+	for _, spec := range []string{"0 */13 * * * *", "45 59 * * * *", "0 15,45 * * * *"} {
+		t.Run(spec, func(t *testing.T) {
+			sched, err := p.Parse(spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := sched.(*SpecSchedule)
+			s.Location = loc
+			for name, got := range map[string]time.Time{"Next": s.Next(from), "Prev": s.Prev(from)} {
+				w := got.In(loc)
+				if got.IsZero() || !fieldMatches(w.Hour(), s.Hour) || !fieldMatches(w.Minute(), s.Minute) || !fieldMatches(w.Second(), s.Second) {
+					t.Errorf("%s(%v) = %v, want a time the spec matches", name, from, got.In(loc))
+				}
+			}
+		})
+	}
+}
+
 // TestDSTGapRun_SearchLimit checks that a gap run counts only within the
 // years that Next and Prev search, and that it keeps the caller's location.
 func TestDSTGapRun_SearchLimit(t *testing.T) {

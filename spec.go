@@ -586,7 +586,7 @@ func (s *SpecSchedule) nextExisting(t time.Time) time.Time {
 			continue
 		}
 		var wrap bool
-		if t, wrap = s.advanceTime(t, added); !wrap {
+		if t, added, wrap = s.advanceTime(t, added); !wrap {
 			return t.In(origLocation)
 		}
 	}
@@ -660,16 +660,17 @@ func (s *SpecSchedule) advanceDay(t time.Time, loc *time.Location, added bool) (
 }
 
 // advanceTime moves t forward to the first matching hour, minute and second
-// of its day. wrap reports that a field wrapped into the next day.
-func (s *SpecSchedule) advanceTime(t time.Time, added bool) (_ time.Time, wrap bool) {
+// of its day. wrap reports that a field wrapped into the next day; added
+// carries over to the next pass, as it did with the former goto.
+func (s *SpecSchedule) advanceTime(t time.Time, added bool) (_ time.Time, _, wrap bool) {
 	if t, added, wrap = advanceHour(t, s.Hour, added); wrap {
-		return t, true
+		return t, added, true
 	}
 	if t, added, wrap = advanceMinute(t, s.Minute, added); wrap {
-		return t, true
+		return t, added, true
 	}
 	t, _, wrap = advanceSecond(t, s.Second, added)
-	return t, wrap
+	return t, added, wrap
 }
 
 // dayMatches returns true if the schedule's day-of-week and day-of-month
@@ -823,7 +824,7 @@ func (s *SpecSchedule) prevExisting(t time.Time) time.Time {
 			continue
 		}
 		var wrap bool
-		if t, wrap = s.retreatTime(t, added); !wrap {
+		if t, added, wrap = s.retreatTime(t, added); !wrap {
 			return t.In(origLocation)
 		}
 	}
@@ -884,16 +885,17 @@ func (s *SpecSchedule) retreatDay(t time.Time, loc *time.Location, added bool) (
 }
 
 // retreatTime moves t back to the last matching hour, minute and second of
-// its day. wrap reports that a field wrapped into the previous day.
-func (s *SpecSchedule) retreatTime(t time.Time, added bool) (_ time.Time, wrap bool) {
+// its day. wrap reports that a field wrapped into the previous day; added
+// carries over to the next pass, as it did with the former goto.
+func (s *SpecSchedule) retreatTime(t time.Time, added bool) (_ time.Time, _, wrap bool) {
 	if t, added, wrap = retreatHour(t, s.Hour, added); wrap {
-		return t, true
+		return t, added, true
 	}
 	if t, added, wrap = retreatMinute(t, s.Minute, added); wrap {
-		return t, true
+		return t, added, true
 	}
 	t, _, wrap = retreatSecond(t, s.Second, added)
-	return t, wrap
+	return t, added, wrap
 }
 
 // scheduleLocation returns the location whose wall clock the schedule matches
