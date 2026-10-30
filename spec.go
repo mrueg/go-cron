@@ -40,8 +40,9 @@ type SpecSchedule struct {
 	DowOrDom bool
 
 	// DSTSkip disables ISC cron behavior for DST spring-forward transitions.
-	// When false (default), a job scheduled in the skipped hour runs in the hour
-	// after the gap, at its scheduled minute. When true, that occurrence is
+	// When false (default), a job scheduled in a spring-forward gap runs once
+	// per gap, at its earliest skipped time shifted by the length of the gap
+	// (2:30 runs at 3:30 after a one-hour gap). When true, that occurrence is
 	// skipped, matching robfig/cron.
 	DSTSkip bool
 }
@@ -281,17 +282,177 @@ func dowConstraintMatches(constraints []DowConstraint, t time.Time) bool {
 // and a 'wrap' flag that is true if the minute rolled past 59 to 0.
 // When wrap is true, the caller must increment the hour and re-validate.
 func advanceMinute(t time.Time, minuteBits uint64, added bool) (time.Time, bool, bool) {
-	for !fieldMatches(t.Minute(), minuteBits) {
+	var change time.Time // the next zone change, looked up once it matters
+	looked := false
+	for minute := t.Minute(); !fieldMatches(minute, minuteBits); {
 		if !added {
 			added = true
 			t = t.Truncate(time.Minute)
 		}
+		if !looked {
+			change, looked = zoneEndAfter(t), true
+		}
 		t = t.Add(1 * time.Minute)
-		if t.Minute() == 0 {
+		minute = t.Minute()
+		// A new hour starts at minute 0, or at a zone change: 01:59 -> 02:30
+		// across a 30-minute gap, 03:44 -> 02:45 in Pacific/Chatham.
+		if minute == 0 || (!change.IsZero() && !t.Before(change)) {
 			return t, added, true // wrap
 		}
 	}
 	return t, added, false
+}
+
+// advanceHour advances time until the hour field matches the schedule bitmask.
+// It returns the updated time, an 'added' flag indicating if time was modified,
+// and a 'wrap' flag that is true if the day changed.
+// When wrap is true, the caller must re-validate the date fields.
+func advanceHour(t time.Time, hourBits uint64, added bool) (time.Time, bool, bool) {
+	for !fieldMatches(t.Hour(), hourBits) {
+		added = true
+		day := t.Day()
+		t = nextHourStart(t)
+		// A new day can start at 01:00 when DST skips midnight.
+		if t.Day() != day {
+			return t, added, true // wrap
+		}
+	}
+	return t, added, false
+}
+
+// zoneEndAfter returns the end of the zone period that contains t: the first
+// zone change after t, or the zero time when none follows. For years past its
+// stored transitions, ZoneBounds reports bounds at year ends, and for a time
+// just after such a bound it returns an end that is not after the time (for
+// example 2040-12-31 00:00 UTC); zoneEndAfter steps over it.
+func zoneEndAfter(t time.Time) time.Time {
+	probe := t
+	for range 48 {
+		_, end := probe.ZoneBounds()
+		if end.IsZero() || end.After(t) {
+			return end
+		}
+		probe = probe.Add(time.Hour)
+	}
+	return time.Time{}
+}
+
+// nextHourStart returns the start of the wall-clock hour after t's hour.
+// When that hour starts in a DST spring-forward gap, it returns the end of
+// the gap (02:30 for a gap from 02:00 to 02:30). When it starts twice because
+// of a fall-back, it returns the first copy. Stepping by wall-clock hours
+// keeps the result on the full hour after a 30- or 45-minute shift.
+func nextHourStart(t time.Time) time.Time {
+	want := (t.Hour() + 1) % 24
+	// One real hour on from a full hour is the next full hour unless a
+	// transition lies in between.
+	if t.Minute() == 0 && t.Second() == 0 && t.Nanosecond() == 0 {
+		if next := t.Add(time.Hour); next.Hour() == want && next.Minute() == 0 {
+			return next
+		}
+	}
+	next := nextFullHour(t, want)
+	// A transition that changes the hour comes first: the end of a gap that
+	// swallowed the full hour (02:00 -> 02:30), or a fall-back at a minute
+	// other than 00 that starts an hour again (Chatham: 03:44:59 +1345 ->
+	// 02:45 +1245).
+	if end := zoneEndAfter(t); !end.IsZero() && end.Before(next) && end.Hour() != t.Hour() {
+		return end
+	}
+	return next
+}
+
+// nextFullHour returns the first instant after t that reads want:00. When a
+// spring-forward gap swallowed that time, it returns one real hour after t;
+// nextHourStart then stops at the end of the gap, which comes first.
+func nextFullHour(t time.Time, want int) time.Time {
+	next := time.Date(t.Year(), t.Month(), t.Day(), t.Hour()+1, 0, 0, 0, t.Location())
+	if next.Hour() == want && next.Minute() == 0 {
+		// time.Date may pick either copy of a repeated wall time; take the
+		// first one that lies after t.
+		if first := earlierCopy(next); first.After(t) {
+			return first
+		}
+		if next.After(t) {
+			return next
+		}
+		if second := laterCopy(next); second.After(t) {
+			return second
+		}
+	}
+	return t.Add(time.Hour)
+}
+
+// prevHourEnd returns the last second (hh:59:59) of the wall-clock hour
+// before t's hour. When that second lies in a DST spring-forward gap, it
+// returns the last second before the gap. When it exists twice because of a
+// fall-back, it returns the second copy, the later one.
+func prevHourEnd(t time.Time) time.Time {
+	prev := prevFullHourEnd(t, (t.Hour()+23)%24)
+	// A transition that changes the hour comes first: the last second before
+	// a gap that swallowed the full hour end, which can belong to an earlier
+	// hour, or a fall-back at a minute other than 00 that ends an hour again
+	// (Chatham: 03:44:59 +1345 before 02:45 +1245).
+	if start, _ := t.ZoneBounds(); !start.IsZero() && !start.After(t) {
+		if last := start.Add(-time.Second); last.After(prev) && last.Hour() != t.Hour() {
+			return last
+		}
+	}
+	return prev
+}
+
+// prevFullHourEnd returns the last instant before t that reads want:59:59.
+// When a spring-forward gap swallowed that time, it returns one real hour
+// before t; prevHourEnd then stops at the last second before the gap, which
+// comes later.
+func prevFullHourEnd(t time.Time, want int) time.Time {
+	prev := time.Date(t.Year(), t.Month(), t.Day(), t.Hour()-1, 59, 59, 0, t.Location())
+	if prev.Hour() == want && prev.Minute() == 59 {
+		// time.Date may pick either copy of a repeated wall time; take the
+		// last one that lies before t.
+		if second := laterCopy(prev); second.Before(t) {
+			return second
+		}
+		if prev.Before(t) {
+			return prev
+		}
+		if first := earlierCopy(prev); first.Before(t) {
+			return first
+		}
+	}
+	return t.Add(-1 * time.Hour)
+}
+
+// earlierCopy returns the first copy of t's wall-clock time when t lies in
+// the second copy of a DST fall-back period, and t otherwise.
+func earlierCopy(t time.Time) time.Time {
+	start, _ := t.ZoneBounds()
+	if start.IsZero() {
+		return t
+	}
+	_, before := start.Add(-time.Nanosecond).Zone()
+	_, after := start.Zone()
+	repeated := time.Duration(before-after) * time.Second
+	if repeated <= 0 || !t.Before(start.Add(repeated)) {
+		return t
+	}
+	return t.Add(-repeated)
+}
+
+// laterCopy returns the second copy of t's wall-clock time when t lies in
+// the first copy of a DST fall-back period, and t otherwise.
+func laterCopy(t time.Time) time.Time {
+	_, end := t.ZoneBounds()
+	if end.IsZero() {
+		return t
+	}
+	_, before := t.Zone()
+	_, after := end.Zone()
+	repeated := time.Duration(before-after) * time.Second
+	if repeated <= 0 || t.Before(end.Add(-repeated)) {
+		return t
+	}
+	return t.Add(repeated)
 }
 
 // advanceSecond advances time until the second field matches the schedule bitmask.
@@ -328,6 +489,30 @@ func prepareTimeForSchedule(t time.Time, schedLoc *time.Location) (prepared time
 	return
 }
 
+// nextDay returns the start of the day after t's day.
+func nextDay(t time.Time) time.Time {
+	day := t.Day()
+	// Handle DST causing midnight to not exist.
+	t = normalizeDSTDay(t.AddDate(0, 0, 1))
+	// A zone can skip a whole day (Pacific/Apia on 2011-12-30); AddDate then
+	// makes no progress.
+	if t.Day() == day {
+		t = normalizeDSTDay(t.Add(24 * time.Hour))
+	}
+	return t
+}
+
+// prevDay returns the end of the day before t's day.
+func prevDay(t time.Time) time.Time {
+	day := t.Day()
+	t = normalizeDSTDayPrev(t.AddDate(0, 0, -1))
+	// A zone can skip a whole day; AddDate then makes no progress.
+	if t.Day() == day {
+		t = normalizeDSTDayPrev(t.Add(-24 * time.Hour))
+	}
+	return t
+}
+
 // normalizeDSTDay adjusts time when DST causes midnight to not exist.
 // For example, Sao Paulo DST transforms midnight on 11/3 into 1am.
 func normalizeDSTDay(t time.Time) time.Time {
@@ -338,17 +523,6 @@ func normalizeDSTDay(t time.Time) time.Time {
 		return t.Add(time.Duration(24-t.Hour()) * time.Hour)
 	}
 	return t.Add(time.Duration(-t.Hour()) * time.Hour)
-}
-
-// checkHourDSTSkip handles ISC cron behavior for DST spring-forward.
-// If time was adjusted one hour forward due to DST, jobs that would have
-// run in the skipped interval will run immediately.
-func checkHourDSTSkip(prev, curr time.Time, hourBits uint64) bool {
-	if curr.Hour()-prev.Hour() != 2 {
-		return false
-	}
-	// #nosec G115 -- Hour()-1 bounded 1-22 in DST context
-	return 1<<uint(curr.Hour()-1)&hourBits > 0
 }
 
 // fieldMatches checks if a time component value matches the schedule bitmask.
@@ -373,28 +547,65 @@ func yearMatches(year int, yearSet map[int]struct{}) bool {
 
 // Next returns the next time this schedule is activated, greater than the given time.
 // If no time can be found to satisfy the schedule, returns the zero time.
+//
+// A time skipped by a DST spring-forward gap runs once per gap, shifted by the
+// length of the gap (ISC cron behavior, ADR-016), unless DSTSkip is set.
 func (s *SpecSchedule) Next(t time.Time) time.Time {
+	next := s.nextExisting(t)
+	if s.DSTSkip {
+		return next
+	}
+	if run, ok := s.nextGapRun(t, next); ok {
+		return run.In(t.Location())
+	}
+	return next
+}
+
+// nextExisting returns the next time after t whose wall clock matches the
+// schedule; times skipped by a DST spring-forward gap never match.
+func (s *SpecSchedule) nextExisting(t time.Time) time.Time {
 	// General approach: For each field (Month, Day, Hour, Minute, Second),
 	// check if it matches. If not, increment until it matches.
 	// Wrap-around resets to verify previous fields.
 
 	t, loc, origLocation := prepareTimeForSchedule(t, s.Location)
-	added := false           // indicates whether a field has been incremented
-	var beforeWrap time.Time // time before the last minute/second rollover
+	added := false // indicates whether a field has been incremented
 
 	// If no time is found within the search limit, return zero.
 	// Use configured MaxSearchYears if set, otherwise use default.
-	searchYears := s.MaxSearchYears
-	if searchYears <= 0 {
-		searchYears = defaultSearchYears
-	}
-	yearLimit := t.Year() + searchYears
+	yearLimit := t.Year() + s.searchSpan()
 
-WRAP:
-	if t.Year() > yearLimit {
-		return time.Time{}
+	// Each pass that wraps a field around starts again from the year.
+	for t.Year() <= yearLimit {
+		var step searchStep
+		t, added, step = s.advanceDate(t, loc, added, yearLimit)
+		if step == stepExhausted {
+			return time.Time{}
+		}
+		if step == stepWrapped {
+			continue
+		}
+		var wrap bool
+		if t, added, wrap = s.advanceTime(t, added); !wrap {
+			return t.In(origLocation)
+		}
 	}
+	return time.Time{}
+}
 
+// searchStep is the outcome of moving t to the next or previous matching
+// date.
+type searchStep int
+
+const (
+	stepFound     searchStep = iota // t is on a matching date
+	stepWrapped                     // a field wrapped around; search again
+	stepExhausted                   // the search limit was passed
+)
+
+// advanceDate moves t forward to the first matching year, month and day,
+// resetting the time of day when it moves.
+func (s *SpecSchedule) advanceDate(t time.Time, loc *time.Location, added bool, yearLimit int) (time.Time, bool, searchStep) {
 	// Check year constraint first (if Year field is not wildcard).
 	// Advance to next valid year if current year doesn't match.
 	for !yearMatches(t.Year(), s.Year) {
@@ -404,7 +615,7 @@ WRAP:
 		}
 		t = t.AddDate(1, 0, 0)
 		if t.Year() > yearLimit {
-			return time.Time{}
+			return t, added, stepExhausted
 		}
 	}
 
@@ -421,77 +632,45 @@ WRAP:
 
 		// Wrapped around.
 		if t.Month() == time.January {
-			goto WRAP
+			return t, added, stepWrapped
 		}
 	}
 
-	// Now get a day in that month.
-	//
-	// NOTE: This causes issues for daylight savings regimes where midnight does
-	// not exist.  For example: Sao Paulo has DST that transforms midnight on
-	// 11/3 into 1am. Handle that by noticing when the Hour ends up != 0.
+	return s.advanceDay(t, loc, added)
+}
+
+// advanceDay moves t forward to the first matching day of its month.
+//
+// NOTE: This causes issues for daylight savings regimes where midnight does
+// not exist.  For example: Sao Paulo has DST that transforms midnight on
+// 11/3 into 1am. Handle that by noticing when the Hour ends up != 0.
+func (s *SpecSchedule) advanceDay(t time.Time, loc *time.Location, added bool) (time.Time, bool, searchStep) {
 	for !dayMatches(s, t) {
 		if !added {
 			added = true
 			t = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
 		}
-		t = t.AddDate(0, 0, 1)
-		// Handle DST causing midnight to not exist.
-		t = normalizeDSTDay(t)
+		t = nextDay(t)
 
 		if t.Day() == 1 {
-			goto WRAP
+			return t, added, stepWrapped
 		}
 	}
+	return t, added, stepFound
+}
 
-	// A minute or second rollover can also cross a spring-forward gap
-	// (01:59 -> 03:00); the skipped hour's job then runs in this hour too.
-	for !fieldMatches(t.Hour(), s.Hour) && !crossedDSTGap(beforeWrap, t, s) {
-		if !added {
-			added = true
-			t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, loc)
-		}
-		prev := t
-		t = t.Add(1 * time.Hour)
-		// ISC cron behavior for DST spring-forward.
-		if s.runsSkippedHour(prev, t) {
-			break
-		}
-
-		if t.Hour() == 0 {
-			goto WRAP
-		}
+// advanceTime moves t forward to the first matching hour, minute and second
+// of its day. wrap reports that a field wrapped into the next day; added
+// carries over to the next pass, as it did with the former goto.
+func (s *SpecSchedule) advanceTime(t time.Time, added bool) (_ time.Time, _, wrap bool) {
+	if t, added, wrap = advanceHour(t, s.Hour, added); wrap {
+		return t, added, true
 	}
-
-	var wrap bool
-	beforeWrap = t
-	t, added, wrap = advanceMinute(t, s.Minute, added)
-	if wrap {
-		goto WRAP
+	if t, added, wrap = advanceMinute(t, s.Minute, added); wrap {
+		return t, added, true
 	}
-
-	beforeWrap = t
 	t, _, wrap = advanceSecond(t, s.Second, added)
-	if wrap {
-		goto WRAP
-	}
-
-	return t.In(origLocation)
-}
-
-// crossedDSTGap reports whether a minute or second rollover from before to
-// after jumped over a DST spring-forward gap whose skipped hour is scheduled:
-// the wall clock moved two hours while less than one hour elapsed.
-func crossedDSTGap(before, after time.Time, s *SpecSchedule) bool {
-	return !before.IsZero() && after.Sub(before) < time.Hour &&
-		s.runsSkippedHour(before, after)
-}
-
-// runsSkippedHour reports whether the step from prev to curr jumped over a DST
-// spring-forward gap whose skipped hour this schedule runs in the hour after
-// the gap (ISC cron behavior). It is always false when DSTSkip is set.
-func (s *SpecSchedule) runsSkippedHour(prev, curr time.Time) bool {
-	return !s.DSTSkip && checkHourDSTSkip(prev, curr, s.Hour)
+	return t, added, wrap
 }
 
 // dayMatches returns true if the schedule's day-of-week and day-of-month
@@ -554,7 +733,7 @@ func prepareTimeForPrevSchedule(t time.Time, schedLoc *time.Location) (prepared 
 // When wrap is true, the caller must decrement the hour and re-validate.
 func retreatMinute(t time.Time, minuteBits uint64, added bool) (time.Time, bool, bool) {
 	for !fieldMatches(t.Minute(), minuteBits) {
-		cur := t.Minute()
+		cur, hour := t.Minute(), t.Hour()
 		if !added {
 			added = true
 			// Truncate to beginning of current minute, then go back 1 second
@@ -563,7 +742,8 @@ func retreatMinute(t time.Time, minuteBits uint64, added bool) (time.Time, bool,
 		} else {
 			t = t.Add(-1 * time.Minute)
 		}
-		if t.Minute() > cur {
+		// A 45-minute DST gap moves from 03:45 to 02:44, not to minute 59.
+		if t.Minute() > cur || t.Hour() != hour {
 			return t, added, true // wrap
 		}
 	}
@@ -593,53 +773,67 @@ func retreatSecond(t time.Time, secondBits uint64, added bool) (time.Time, bool,
 // It returns the updated time, an 'added' flag indicating if time was modified,
 // and a 'wrap' flag that is true if the hour rolled past 0 to 23.
 // When wrap is true, the caller must decrement the day and re-validate.
-// A non-zero run is the run that Next makes after a DST spring-forward gap
-// for the skipped hour (ISC cron behavior); the caller returns it as the result.
-func retreatHour(t time.Time, s *SpecSchedule, added bool, latest time.Time) (_ time.Time, _, wrap bool, run time.Time) {
-	for !fieldMatches(t.Hour(), s.Hour) {
+func retreatHour(t time.Time, hourBits uint64, added bool) (_ time.Time, _, wrap bool) {
+	for !fieldMatches(t.Hour(), hourBits) {
 		cur := t.Hour()
-		if !added {
-			added = true
-			// Set to end of current hour
-			t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 59, 59, 0, t.Location())
-		} else {
-			later := t
-			t = t.Add(-1 * time.Hour)
-			if run, ok := dstSkippedRun(t, later, s, latest); ok {
-				return t, added, false, run
-			}
-		}
+		added = true
+		t = prevHourEnd(t)
 		if t.Hour() > cur {
-			return t, added, true, time.Time{}
+			return t, added, true
 		}
 	}
-	return t, added, false, time.Time{}
+	return t, added, false
 }
 
 // Prev returns the previous time this schedule was activated, earlier than the given time.
 // If no time can be found to satisfy the schedule, returns the zero time.
+// It reports the runs for DST spring-forward gaps that Next reports.
 func (s *SpecSchedule) Prev(t time.Time) time.Time {
+	prev := s.prevExisting(t)
+	if s.DSTSkip {
+		return prev
+	}
+	if run, ok := s.prevGapRun(t, prev); ok {
+		return run.In(t.Location())
+	}
+	return prev
+}
+
+// prevExisting returns the latest time before t whose wall clock matches the
+// schedule; times skipped by a DST spring-forward gap never match.
+func (s *SpecSchedule) prevExisting(t time.Time) time.Time {
 	// General approach: For each field (Month, Day, Hour, Minute, Second),
 	// check if it matches. If not, decrement until it matches.
 	// Wrap-around resets to verify previous fields.
 
 	t, loc, origLocation := prepareTimeForPrevSchedule(t, s.Location)
-	latest := t    // results must not be later than this
 	added := false // indicates whether a field has been decremented
 
 	// If no time is found within the search limit, return zero.
 	// Use configured MaxSearchYears if set, otherwise use default.
-	searchYears := s.MaxSearchYears
-	if searchYears <= 0 {
-		searchYears = defaultSearchYears
-	}
-	yearLimit := t.Year() - searchYears
+	yearLimit := t.Year() - s.searchSpan()
 
-WRAP:
-	if t.Year() < yearLimit {
-		return time.Time{}
+	// Each pass that wraps a field around starts again from the year.
+	for t.Year() >= yearLimit {
+		var step searchStep
+		t, added, step = s.retreatDate(t, loc, added, yearLimit)
+		if step == stepExhausted {
+			return time.Time{}
+		}
+		if step == stepWrapped {
+			continue
+		}
+		var wrap bool
+		if t, added, wrap = s.retreatTime(t, added); !wrap {
+			return t.In(origLocation)
+		}
 	}
+	return time.Time{}
+}
 
+// retreatDate moves t back to the last matching year, month and day, setting
+// the time of day to its end when it moves.
+func (s *SpecSchedule) retreatDate(t time.Time, loc *time.Location, added bool, yearLimit int) (time.Time, bool, searchStep) {
 	// Check year constraint first (if Year field is not wildcard).
 	// Retreat to previous valid year if current year doesn't match.
 	for !yearMatches(t.Year(), s.Year) {
@@ -650,7 +844,7 @@ WRAP:
 		}
 		t = t.AddDate(-1, 0, 0)
 		if t.Year() < yearLimit {
-			return time.Time{}
+			return t, added, stepExhausted
 		}
 	}
 
@@ -658,23 +852,22 @@ WRAP:
 	// If it's this month, then do nothing.
 	for !fieldMatches(int(t.Month()), s.Month) {
 		cur := t.Month()
-		if !added {
-			added = true
-			// Set to start of month, then go back 1 second to end of previous month
-			t = time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, loc)
-			t = t.Add(-1 * time.Second)
-		} else {
-			// Go to the first day of current month, then back 1 second
-			t = time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, loc)
-			t = t.Add(-1 * time.Second)
-		}
+		added = true
+		// Go to the first day of the month, then back 1 second to the end of
+		// the previous month.
+		t = time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, loc)
+		t = t.Add(-1 * time.Second)
 		// Check for wrap to previous year
 		if t.Month() > cur {
-			goto WRAP
+			return t, added, stepWrapped
 		}
 	}
 
-	// Now get a day in that month (going backwards).
+	return s.retreatDay(t, loc, added)
+}
+
+// retreatDay moves t back to the last matching day of its month.
+func (s *SpecSchedule) retreatDay(t time.Time, loc *time.Location, added bool) (time.Time, bool, searchStep) {
 	for !dayMatches(s, t) {
 		cur := t.Day()
 		if !added {
@@ -682,59 +875,131 @@ WRAP:
 			// Set to end of current day
 			t = time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 0, loc)
 		}
-		t = t.AddDate(0, 0, -1)
-		// Handle DST causing issues
-		t = normalizeDSTDayPrev(t)
+		t = prevDay(t)
 
 		if t.Day() > cur {
-			goto WRAP
+			return t, added, stepWrapped
 		}
 	}
-
-	// Find matching hour (going backwards)
-	var run time.Time
-	var wrap bool
-	t, added, wrap, run = retreatHour(t, s, added, latest)
-	if !run.IsZero() {
-		return run.In(origLocation)
-	}
-	if wrap {
-		goto WRAP
-	}
-
-	t, added, wrap = retreatMinute(t, s.Minute, added)
-	if wrap {
-		goto WRAP
-	}
-
-	t, _, wrap = retreatSecond(t, s.Second, added)
-	if wrap {
-		goto WRAP
-	}
-
-	return t.In(origLocation)
+	return t, added, stepFound
 }
 
-// dstSkippedRun returns the run that Next produces for an hour skipped by a
-// DST spring-forward gap between earlier and later. That run is the first
-// matching minute and second of the hour after the gap. It reports false when
-// no hour was skipped, the skipped hour is not scheduled, or the run is later
-// than latest, or the schedule sets DSTSkip.
-func dstSkippedRun(earlier, later time.Time, s *SpecSchedule, latest time.Time) (time.Time, bool) {
-	if !s.runsSkippedHour(earlier, later) {
+// retreatTime moves t back to the last matching hour, minute and second of
+// its day. wrap reports that a field wrapped into the previous day; added
+// carries over to the next pass, as it did with the former goto.
+func (s *SpecSchedule) retreatTime(t time.Time, added bool) (_ time.Time, _, wrap bool) {
+	if t, added, wrap = retreatHour(t, s.Hour, added); wrap {
+		return t, added, true
+	}
+	if t, added, wrap = retreatMinute(t, s.Minute, added); wrap {
+		return t, added, true
+	}
+	t, _, wrap = retreatSecond(t, s.Second, added)
+	return t, added, wrap
+}
+
+// scheduleLocation returns the location whose wall clock the schedule matches
+// for a call with t, as prepareTimeForSchedule does.
+func (s *SpecSchedule) scheduleLocation(t time.Time) *time.Location {
+	if s.Location == time.Local {
+		return t.Location()
+	}
+	return s.Location
+}
+
+// searchSpan returns how far Next and Prev search for a run.
+func (s *SpecSchedule) searchSpan() int {
+	if s.MaxSearchYears > 0 {
+		return s.MaxSearchYears
+	}
+	return defaultSearchYears
+}
+
+// nextGapRun returns the earliest DST gap run after t and before next. A zero
+// next means that no time after t matches within the search limit.
+func (s *SpecSchedule) nextGapRun(t, next time.Time) (time.Time, bool) {
+	loc := s.scheduleLocation(t)
+	limit := next
+	if limit.IsZero() {
+		// nextExisting searches to the end of year t.Year()+searchSpan.
+		limit = time.Date(t.In(loc).Year()+s.searchSpan()+1, 1, 1, 0, 0, 0, 0, loc)
+	}
+	// The run for the gap that opened the zone in effect at t can still lie
+	// after t (for 01:59:59 -> 03:00, a 02:30 job runs at 03:30).
+	tr, _ := t.In(loc).ZoneBounds()
+	if tr.IsZero() || tr.After(t) || !t.Before(tr.Add(gapLength(tr, loc))) {
+		// A gap run lies before the end of its gap; past it, only later
+		// transitions can hold a run.
+		tr = zoneEndAfter(t.In(loc))
+	}
+	for !tr.IsZero() && tr.Before(limit) {
+		if run, ok := s.gapRun(tr, loc); ok && run.After(t) && run.Before(limit) {
+			return run, true
+		}
+		tr = zoneEndAfter(tr.In(loc))
+	}
+	return time.Time{}, false
+}
+
+// prevGapRun returns the latest DST gap run before t and after prev. A zero
+// prev means that no time before t matches within the search limit.
+func (s *SpecSchedule) prevGapRun(t, prev time.Time) (time.Time, bool) {
+	loc := s.scheduleLocation(t)
+	limit := prev
+	if limit.IsZero() {
+		// prevExisting searches back to the start of year t.Year()-searchSpan.
+		limit = time.Date(t.In(loc).Year()-s.searchSpan(), 1, 1, 0, 0, 0, 0, loc).Add(-time.Nanosecond)
+	}
+	before := t.Truncate(time.Second) // Prev ignores fractions of a second
+	tr, _ := t.In(loc).ZoneBounds()
+	for !tr.IsZero() {
+		if run, ok := s.gapRun(tr, loc); ok && run.Before(before) && run.After(limit) {
+			return run, true
+		}
+		if !tr.After(limit) {
+			break
+		}
+		tr, _ = tr.Add(-time.Nanosecond).In(loc).ZoneBounds()
+	}
+	return time.Time{}, false
+}
+
+// gapLength returns how far the zone transition tr moves the clock forward:
+// the length of a spring-forward gap, or zero or less for any other
+// transition.
+func gapLength(tr time.Time, loc *time.Location) time.Duration {
+	_, before := tr.Add(-time.Nanosecond).In(loc).Zone()
+	_, after := tr.In(loc).Zone()
+	return time.Duration(after-before) * time.Second
+}
+
+// gapRun returns the run for the DST spring-forward gap that opens at the
+// zone transition tr: the earliest scheduled wall time that the gap skips,
+// shifted by the length of the gap. All other times in the gap merge into
+// this run, so the schedule runs once per gap (ISC cron behavior, ADR-016).
+// It reports false when tr does not move the clock forward or the gap skips
+// no scheduled time.
+func (s *SpecSchedule) gapRun(tr time.Time, loc *time.Location) (time.Time, bool) {
+	gap := gapLength(tr, loc)
+	if gap <= 0 {
 		return time.Time{}, false
 	}
-	run := time.Date(later.Year(), later.Month(), later.Day(), later.Hour(), 0, 0, 0, later.Location())
-	for run.Hour() == later.Hour() && !fieldMatches(run.Minute(), s.Minute) {
-		run = run.Add(time.Minute)
+	// Walk the skipped wall times as UTC times with the same clock reading.
+	_, before := tr.Add(-time.Nanosecond).In(loc).Zone()
+	start := tr.UTC().Add(time.Duration(before) * time.Second)
+	end := start.Add(gap)
+	for w := start; w.Before(end); w = w.Truncate(time.Minute).Add(time.Minute) {
+		if !yearMatches(w.Year(), s.Year) || !fieldMatches(int(w.Month()), s.Month) ||
+			!dayMatches(s, w) || !fieldMatches(w.Hour(), s.Hour) || !fieldMatches(w.Minute(), s.Minute) {
+			continue
+		}
+		for sec := w; sec.Minute() == w.Minute() && sec.Before(end); sec = sec.Add(time.Second) {
+			if fieldMatches(sec.Second(), s.Second) {
+				return tr.Add(sec.Sub(start)), true
+			}
+		}
 	}
-	for run.Hour() == later.Hour() && !fieldMatches(run.Second(), s.Second) {
-		run = run.Add(time.Second)
-	}
-	if run.Hour() != later.Hour() || !fieldMatches(run.Minute(), s.Minute) || run.After(latest) {
-		return time.Time{}, false
-	}
-	return run, true
+	return time.Time{}, false
 }
 
 // normalizeDSTDayPrev adjusts time when DST causes issues going backwards.
