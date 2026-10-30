@@ -3,7 +3,10 @@
 
 package cron
 
-import "time"
+import (
+	"slices"
+	"time"
+)
 
 // MissedPolicy defines how to handle jobs that were scheduled to run
 // while the scheduler was not running (e.g., application restart).
@@ -123,6 +126,10 @@ func (c *Cron) calculateMissedRuns(e *Entry, now time.Time) []time.Time {
 
 	var missed []time.Time
 	t := e.Prev
+	// The DST fall-back guard applies to catch-ups too: the second copy of a
+	// time that ran, or that an earlier MissedRunAll catch-up in this list
+	// runs, is not a missed run.
+	prev, fired := e.Prev, slices.Clone(e.fallBackRuns)
 
 	for len(missed) < maxMissedRuns {
 		t = e.Schedule.Next(t)
@@ -132,12 +139,16 @@ func (c *Cron) calculateMissedRuns(e *Entry, now time.Time) []time.Time {
 			break
 		}
 
-		// Check grace period: skip if the missed time is too old
-		if e.MissedGracePeriod > 0 && now.Sub(t) > e.MissedGracePeriod {
+		if c.skipMissed(e, now, t, prev, fired) {
 			continue
 		}
 
 		missed = append(missed, t)
+		// MissedRunOnce runs only the last time of the list, so the earlier
+		// ones do not count as runs.
+		if e.MissedPolicy == MissedRunAll {
+			prev, fired = t, c.addFallBackRun(e.Schedule, fired, t)
+		}
 	}
 
 	// Log warning if we hit the limit
@@ -151,6 +162,16 @@ func (c *Cron) calculateMissedRuns(e *Entry, now time.Time) []time.Time {
 	}
 
 	return missed
+}
+
+// skipMissed reports whether the missed time t is left out of the catch-up
+// list: it is older than the grace period, or it is the second copy of a DST
+// fall-back time that ran (fired) or that the previous catch-up (prev) runs.
+func (c *Cron) skipMissed(e *Entry, now, t, prev time.Time, fired []time.Time) bool {
+	if e.MissedGracePeriod > 0 && now.Sub(t) > e.MissedGracePeriod {
+		return true
+	}
+	return c.isFallBackRepeat(e.Schedule, fired, prev, t)
 }
 
 // handleMissedRuns executes catch-up runs based on the entry's MissedPolicy.
@@ -178,6 +199,7 @@ func (c *Cron) handleMissedRuns(e *Entry, missed []time.Time) {
 		c.startJob(e.entryCtx, e.running, e.ID, e.Job, e.WrappedJob, RunInfo{ScheduledTime: lastMissed, Trigger: TriggerCatchUp})
 		// Update Prev to prevent duplicate catch-ups on restart
 		e.Prev = lastMissed
+		c.recordFallBackRun(e)
 
 	case MissedRunAll:
 		c.logger.Info("catching up all missed executions",
@@ -188,6 +210,7 @@ func (c *Cron) handleMissedRuns(e *Entry, missed []time.Time) {
 		)
 		for _, scheduledTime := range missed {
 			c.startJob(e.entryCtx, e.running, e.ID, e.Job, e.WrappedJob, RunInfo{ScheduledTime: scheduledTime, Trigger: TriggerCatchUp})
+			e.fallBackRuns = c.addFallBackRun(e.Schedule, e.fallBackRuns, scheduledTime)
 		}
 		// Update Prev to the most recent catch-up time
 		e.Prev = missed[len(missed)-1]

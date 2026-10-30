@@ -156,7 +156,11 @@ Jobs scheduled during the skipped hour run immediately at 3:00 AM.
 ```
 2:00 AM occurs twice
 ```
-Jobs run once, during the first occurrence.
+A job at a fixed time runs once: during the first occurrence, or during the
+second if the entry did not run it in the first (for example because it was
+added or paused in between). A job that runs every hour or more often keeps its
+rhythm and runs in both occurrences where the clock repeats a full hour; zones
+with a shorter repeat have limits that [DST_HANDLING.md](DST_HANDLING.md) lists.
 
 See [DST_HANDLING.md](DST_HANDLING.md) for comprehensive documentation.
 

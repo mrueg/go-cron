@@ -534,6 +534,17 @@ func fieldMatches(value int, bits uint64) bool {
 	return 1<<uint(value)&bits != 0
 }
 
+// matchesWall reports whether every field of s matches the wall-clock time
+// that t shows, ignoring t's location.
+func (s *SpecSchedule) matchesWall(t time.Time) bool {
+	return yearMatches(t.Year(), s.Year) &&
+		fieldMatches(int(t.Month()), s.Month) &&
+		dayMatches(s, t) &&
+		fieldMatches(t.Hour(), s.Hour) &&
+		fieldMatches(t.Minute(), s.Minute) &&
+		fieldMatches(t.Second(), s.Second)
+}
+
 // yearMatches checks if a year matches the year set.
 // A nil yearSet means any year (wildcard).
 // An empty yearSet means no year matches.

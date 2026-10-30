@@ -370,6 +370,11 @@ type Entry struct {
 	// the schedule.
 	immediateDue bool
 
+	// fallBackRuns holds the scheduled times this entry fired in the first
+	// copy of a DST fall-back hour. The fall-back guard skips the second copy
+	// of exactly these times.
+	fallBackRuns []time.Time
+
 	// runOnce is an internal flag set by WithRunOnce().
 	// When true, the entry will be automatically removed after its first execution.
 	runOnce bool
@@ -1132,6 +1137,7 @@ func (c *Cron) scheduleEntryNext(entry *Entry, now time.Time) {
 	} else {
 		entry.immediateDue = false
 		entry.Next = entry.Schedule.Next(now)
+		c.skipFallBackRepeats(entry)
 	}
 }
 
@@ -1155,11 +1161,27 @@ func (c *Cron) scheduleLocation(sched Schedule) *time.Location {
 //
 // An interval (@every) is exempt: one interval after 01:30 EDT is 01:30 EST,
 // a regular run that only shows the same wall-clock time.
-func (c *Cron) isFallBackRepeat(sched Schedule, prev, next time.Time) bool {
+//
+// A spec that also matches the wall-clock time one repeat length before or
+// after next runs in every such stretch of the day, for example every 5
+// minutes or every hour. Its second copy is a regular run, so it is exempt
+// too: "*/5 0-6 * * *" and "0 * * * *" keep their rhythm through both copies.
+// Any other spec runs each wall-clock time once: it also skips next when the
+// entry fired that time in the first copy (fired), so "0,30 1 * * *" runs
+// 01:00 and 01:30 once each (issue #446) and "0 */2 * * *" keeps its two-hour
+// spacing.
+func (c *Cron) isFallBackRepeat(sched Schedule, fired []time.Time, prev, next time.Time) bool {
 	var u *UnionSchedule
 	switch s := sched.(type) {
 	case ConstantDelaySchedule, *ConstantDelaySchedule, AlignedSchedule, *AlignedSchedule:
 		return false
+	case *SpecSchedule:
+		loc := c.scheduleLocation(s)
+		repeated := secondCopyRepeat(next, loc)
+		if repeated == 0 || recursAcrossRepeat(s, next.In(loc), repeated) {
+			return false
+		}
+		return isDSTFallBackDuplicate(prev, next, loc) || slices.ContainsFunc(fired, next.Add(-repeated).Equal)
 	case *UnionSchedule:
 		u = s
 	default:
@@ -1170,12 +1192,87 @@ func (c *Cron) isFallBackRepeat(sched Schedule, prev, next time.Time) bool {
 		if !firesAt(s, next) {
 			continue
 		}
-		if !c.isFallBackRepeat(s, prev, next) {
+		if !c.isFallBackRepeat(s, fired, prev, next) {
 			return false
 		}
 		repeat = true
 	}
 	return repeat
+}
+
+// secondCopyRepeat returns how long the clock repeats when next lies in the
+// second copy of a DST fall-back period in loc (one hour in most zones, 30
+// minutes on Lord Howe Island, two hours on Antarctica/Troll), and zero
+// otherwise.
+func secondCopyRepeat(next time.Time, loc *time.Location) time.Duration {
+	if next.IsZero() || loc == nil {
+		return 0
+	}
+	tr, _ := next.In(loc).ZoneBounds()
+	if tr.IsZero() {
+		return 0
+	}
+	_, before := tr.Add(-time.Nanosecond).In(loc).Zone()
+	_, after := tr.In(loc).Zone()
+	repeated := time.Duration(before-after) * time.Second
+	if repeated <= 0 || !next.Before(tr.Add(repeated)) {
+		return 0
+	}
+	return repeated
+}
+
+// recursAcrossRepeat reports whether s also matches the wall-clock time of
+// next shifted by repeated in either direction, on a calendar without DST.
+// Such a spec runs at least once in every stretch of that length around next,
+// so the second copy of the clock holds a regular run of it.
+func recursAcrossRepeat(s *SpecSchedule, next time.Time, repeated time.Duration) bool {
+	wall := time.Date(next.Year(), next.Month(), next.Day(), next.Hour(), next.Minute(), next.Second(), 0, time.UTC)
+	return s.matchesWall(wall.Add(-repeated)) || s.matchesWall(wall.Add(repeated))
+}
+
+// inFallBackFirstCopy reports whether t lies in the first copy of a DST
+// fall-back hour in loc: the wall-clock time t shows comes again after the
+// next zone transition.
+func inFallBackFirstCopy(t time.Time, loc *time.Location) bool {
+	if t.IsZero() || loc == nil {
+		return false
+	}
+	_, end := t.In(loc).ZoneBounds()
+	if end.IsZero() {
+		return false
+	}
+	_, before := t.In(loc).Zone()
+	_, after := end.In(loc).Zone()
+	repeated := time.Duration(before-after) * time.Second
+	return repeated > 0 && !t.Before(end.Add(-repeated))
+}
+
+// recordFallBackRun adds the scheduled time e just fired (e.Prev) to
+// e.fallBackRuns.
+func (c *Cron) recordFallBackRun(e *Entry) {
+	e.fallBackRuns = c.addFallBackRun(e.Schedule, e.fallBackRuns, e.Prev)
+}
+
+// addFallBackRun returns runs with the fired time t added when t lies in the
+// first copy of a fall-back hour in the location of sched, or of any member
+// of a union. Records from an earlier transition are dropped.
+func (c *Cron) addFallBackRun(sched Schedule, runs []time.Time, t time.Time) []time.Time {
+	locs := []*time.Location{c.scheduleLocation(sched)}
+	if u, ok := sched.(*UnionSchedule); ok {
+		locs = locs[:0]
+		for _, s := range u.Schedules {
+			locs = append(locs, c.scheduleLocation(s))
+		}
+	}
+	if !slices.ContainsFunc(locs, func(loc *time.Location) bool { return inFallBackFirstCopy(t, loc) }) {
+		return runs
+	}
+	// A repeated hour lasts at most two hours; older records belong to an
+	// earlier transition.
+	if len(runs) > 0 && runs[len(runs)-1].Before(t.Add(-3*time.Hour)) {
+		runs = nil
+	}
+	return append(runs, t)
 }
 
 // firesAt reports whether s has an activation at exactly t.
@@ -1186,7 +1283,7 @@ func firesAt(s Schedule, t time.Time) bool {
 // isDSTFallBackDuplicate detects when the next scheduled time is the second
 // occurrence of the same wall-clock time as the previous execution, which
 // happens during DST fall-back transitions when clocks repeat an hour.
-// Used by postDispatchScheduled to prevent duplicate job execution (see ADR-016).
+// Used by the fall-back guard, skipFallBackRepeats (see ADR-016).
 func isDSTFallBackDuplicate(prev, next time.Time, loc *time.Location) bool {
 	if prev.IsZero() || next.IsZero() || loc == nil {
 		return false
@@ -1212,13 +1309,15 @@ func (c *Cron) handleTimeBackwards(now time.Time) {
 	entriesCopy := make([]*Entry, len(c.entries))
 	copy(entriesCopy, c.entries)
 	for _, e := range entriesCopy {
-		if !e.Prev.IsZero() && e.Prev.After(now) {
-			e.immediateDue = false
-			e.Next = e.Schedule.Next(now)
-			c.entries.Update(e)
-			c.logger.Info("reschedule", "reason", "time moved backwards",
-				"entry", e.ID, "prev", e.Prev, "now", now, "next", e.Next)
+		if e.Prev.IsZero() || !e.Prev.After(now) {
+			continue
 		}
+		e.immediateDue = false
+		e.Next = e.Schedule.Next(now)
+		c.skipFallBackRepeats(e)
+		c.entries.Update(e)
+		c.logger.Info("reschedule", "reason", "time moved backwards",
+			"entry", e.ID, "prev", e.Prev, "now", now, "next", e.Next)
 	}
 }
 
@@ -1237,24 +1336,33 @@ func (c *Cron) postDispatchScheduled(e *Entry, now time.Time) {
 		return
 	}
 
+	c.recordFallBackRun(e)
 	e.Next = e.Schedule.Next(now)
-	// DST fall-back guard: if Next() returned the second occurrence of the
-	// same wall-clock time we just fired (e.Prev), skip it to prevent
-	// duplicate execution during repeated hours. See ADR-016.
-	loc := c.scheduleLocation(e.Schedule)
-	if c.isFallBackRepeat(e.Schedule, e.Prev, e.Next) {
-		skipped := e.Next
-		e.Next = e.Schedule.Next(e.Next)
-		c.logger.Info("skip-dst-duplicate", "entry", e.ID,
-			"prev", e.Prev.In(loc), "skipped", skipped.In(loc), "next", e.Next.In(loc))
-		if e.Next.IsZero() {
-			c.logger.Error(errors.New("schedule exhausted after DST skip"),
-				"schedule-exhausted", "entry", e.ID, "skipped", skipped.In(loc))
-		}
-	}
+	c.skipFallBackRepeats(e)
 	c.hooks.callOnSchedule(e.ID, e.Job, e.Next)
 	c.entries.Update(e)
 	c.logger.Info("run", "now", now, "entry", e.ID, "next", e.Next)
+}
+
+// skipFallBackRepeats is the DST fall-back guard: while e.Next is the second
+// occurrence of a wall-clock time that already ran, it advances e.Next, so a
+// repeated hour does not run a job twice. A spec can have several such times
+// in a row (*/20 1 * * *). See ADR-016.
+func (c *Cron) skipFallBackRepeats(e *Entry) {
+	if !c.isFallBackRepeat(e.Schedule, e.fallBackRuns, e.Prev, e.Next) {
+		return
+	}
+	loc := c.scheduleLocation(e.Schedule)
+	skipped, count := e.Next, 0
+	for ; c.isFallBackRepeat(e.Schedule, e.fallBackRuns, e.Prev, e.Next); count++ {
+		e.Next = e.Schedule.Next(e.Next)
+	}
+	c.logger.Info("skip-dst-duplicate", "entry", e.ID, "prev", e.Prev.In(loc),
+		"skipped", skipped.In(loc), "count", count, "next", e.Next.In(loc))
+	if e.Next.IsZero() {
+		c.logger.Error(errors.New("schedule exhausted after DST skip"),
+			"schedule-exhausted", "entry", e.ID, "skipped", skipped.In(loc))
+	}
 }
 
 // postDispatchTriggered handles run-once removal after a manually triggered
@@ -1284,6 +1392,7 @@ func (c *Cron) processDueEntries(now time.Time) {
 		if e.Paused {
 			e.immediateDue = false
 			e.Next = e.Schedule.Next(now)
+			c.skipFallBackRepeats(e)
 			c.hooks.callOnSchedule(e.ID, e.Job, e.Next)
 			c.entries.Update(e)
 			c.logger.Info("skipped-paused", "now", now, "entry", e.ID, "next", e.Next)

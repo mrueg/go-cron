@@ -53,7 +53,7 @@ Cron spec parser and job scheduler for Go (successor to robfig/cron).
 | [ADR-013](docs/adr/ADR-013-heap-index-tracking.md) | Entry Heap Index | Entry stores heapIndex for O(log n) removal |
 | [ADR-014](docs/adr/ADR-014-max-idle-duration.md) | Max Idle Duration | 100,000 hours as practical infinity for responsive idle |
 | [ADR-015](docs/adr/ADR-015-zero-time-sentinel.md) | Zero Time Sentinel | time.Time{} signals schedule exhaustion |
-| [ADR-016](docs/adr/ADR-016-dst-normalization.md) | DST Normalization | ISC cron behavior for spring-forward/fall-back |
+| [ADR-016](docs/adr/ADR-016-dst-normalization.md) | DST Normalization | ISC cron behavior for spring-forward; its fall-back part is superseded by ADR-027 |
 | [ADR-017](docs/adr/ADR-017-job-with-context.md) | JobWithContext | Optional interface for context-aware jobs |
 | [ADR-018](docs/adr/ADR-018-run-flags.md) | Run Flags | WithRunImmediately() and WithRunOnce() entry flags |
 | [ADR-019](docs/adr/ADR-019-atomic-entry-limit.md) | Atomic Entry Limit | CAS loop for lock-free entry count limiting |
@@ -64,6 +64,7 @@ Cron spec parser and job scheduler for Go (successor to robfig/cron).
 | [ADR-024](docs/adr/ADR-024-remove-and-wait.md) | Remove and Wait | `RemoveAndWait` takes the tracker in the removal step, waits outside the run loop |
 | [ADR-025](docs/adr/ADR-025-locker-interface.md) | Locker Interface | `Locker`, `SkipDuplicateRuns`, `SkipWhileLocked` in the library, stores stay out; dedup key = name + scheduled time in UTC, fail closed |
 | [ADR-026](docs/adr/ADR-026-aligned-intervals.md) | Aligned Intervals | `@every_aligned` fires on the epoch grid, `@every_start` from start; `AlignEvery` sets plain `@every`; intervals skip the DST fall-back guard |
+| [ADR-027](docs/adr/ADR-027-fall-back-by-rhythm.md) | Fall-Back by Rhythm | In a repeated fall-back hour, specs that run hourly or more often keep their rhythm; fixed times run once (supersedes the fall-back part of ADR-016) |
 
 When proposing changes that conflict with an ADR, you MUST:
 1. Read the full ADR including alternatives considered
@@ -200,7 +201,7 @@ than chasing it.
 | `docs/OPERATIONS.md` | Production deployment, shutdown, monitoring |
 | `docs/TROUBLESHOOTING.md` | Common issues and debugging techniques |
 | `docs/PROJECT_INDEX.md` | Complete project file index |
-| `docs/adr/` | Architecture Decision Records (27 ADRs) |
+| `docs/adr/` | Architecture Decision Records (28 ADRs) |
 
 ## Releasing
 

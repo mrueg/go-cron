@@ -1782,7 +1782,7 @@ UnionSchedule fires at every time at which any of its schedules fires. A time th
 
 A schedule that returns the zero time is exhausted and no longer contributes; the union is exhausted only when all of its schedules are. `Prev` returns the latest earlier time of all schedules, or the zero time if one of them does not implement `ScheduleWithPrev`.
 
-On DST fall-back days the scheduler skips the repeated wall-clock time per member, in that member's own zone (its `CRON_TZ=`/`TZ=`, or the scheduler's location): members in different zones, or without one, each run their repeated hour once. A time is skipped only if every member firing then repeats; a member whose regular time coincides with another member's repeat still runs.
+On DST fall-back days the scheduler applies the fall-back rule ([ADR-027](adr/ADR-027-fall-back-by-rhythm.md)) per member, in that member's own zone (its `CRON_TZ=`/`TZ=`, or the scheduler's location): a member that runs every hour or more often keeps its rhythm through both copies of a repeated full hour, and a member at fixed times runs each of them once ([DST_HANDLING.md](DST_HANDLING.md) lists the limits, such as zones that repeat 30 minutes). A time in the second copy is skipped only if every member firing then skips it; a member whose regular time coincides with another member's repeat still runs.
 
 #### func Union
 

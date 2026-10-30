@@ -31,7 +31,7 @@ An Architecture Decision Record captures a significant decision made about the a
 | [ADR-013](ADR-013-heap-index-tracking.md) | Entry Heap Index Tracking | Accepted | 2025-12 |
 | [ADR-014](ADR-014-max-idle-duration.md) | Maximum Idle Duration | Accepted | 2025-12 |
 | [ADR-015](ADR-015-zero-time-sentinel.md) | Zero Time as Schedule Exhaustion Sentinel | Accepted | 2025-12 |
-| [ADR-016](ADR-016-dst-normalization.md) | DST Handling via Normalization | Accepted | 2025-12 |
+| [ADR-016](ADR-016-dst-normalization.md) | DST Handling via Normalization | Accepted; fall-back part superseded by ADR-027 | 2025-12 |
 | [ADR-017](ADR-017-job-with-context.md) | Optional JobWithContext Interface | Accepted | 2025-12 |
 | [ADR-018](ADR-018-run-flags.md) | Run-Immediately and Run-Once Entry Flags | Accepted | 2025-12 |
 | [ADR-019](ADR-019-atomic-entry-limit.md) | Atomic CAS for Entry Count Limiting | Accepted | 2025-12 |
@@ -42,6 +42,7 @@ An Architecture Decision Record captures a significant decision made about the a
 | [ADR-024](ADR-024-remove-and-wait.md) | Remove an Entry and Wait for Its Invocations | Accepted | 2026-10 |
 | [ADR-025](ADR-025-locker-interface.md) | Locker Interface for Coordination Between Instances | Accepted | 2026-10 |
 | [ADR-026](ADR-026-aligned-intervals.md) | Aligned Intervals | Accepted | 2026-10 |
+| [ADR-027](ADR-027-fall-back-by-rhythm.md) | DST Fall-Back by Rhythm | Accepted | 2026-10 |
 
 ## ADR Template
 

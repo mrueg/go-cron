@@ -1,7 +1,8 @@
 # ADR-016: DST Handling via Normalization
 
 ## Status
-Accepted
+Accepted. The fall-back part is superseded by
+[ADR-027](ADR-027-fall-back-by-rhythm.md) (2026-10-29).
 
 **Update 2026-10-25:** [ADR-026](ADR-026-aligned-intervals.md) exempts
 `@every` intervals (`ConstantDelaySchedule`, `AlignedSchedule`) from the
@@ -81,6 +82,13 @@ Jobs during the repeated hour run once, during the first occurrence:
 **Rationale:** ISC cron runs jobs once per scheduled time, not once per wall-clock occurrence.
 
 The scheduler enforces this rule, not the schedule: `Schedule.Next()` returns both occurrences, and a caller that uses `Next()` directly sees both (see "Preventing Duplicate Execution During Fall-Back" below). Pinned by `TestDSTFallBack_SchedulerDedup` in `cron_test.go`.
+
+**Update 2026-10-29:** [ADR-027](ADR-027-fall-back-by-rhythm.md) replaces
+this section. A spec that runs every hour or more often keeps its rhythm
+through both copies of the repeated hour (`0 * * * *` runs 01:00 EDT and 01:00
+EST); any other spec runs each wall-clock time once that day, also with several
+times in the repeated hour
+([#446](https://github.com/netresearch/go-cron/issues/446)).
 
 ## Consequences
 
